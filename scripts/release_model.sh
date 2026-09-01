@@ -49,7 +49,7 @@ echo "======================================================================"
 # ------------------------------------------------------------------------------
 echo -e "\n📦 [1/5] 检查系统环境与量化工具..."
 
-pip install -q sentencepiece gguf protobuf
+pip install -q sentencepiece gguf protobuf "torchao>=0.16.0"
 
 if [ ! -f "llama.cpp/build/bin/llama-quantize" ] && [ ! -f "llama.cpp/llama-quantize" ]; then
     echo "⚙️ 正在自动拉取并轻量编译 llama.cpp 量化工具..."

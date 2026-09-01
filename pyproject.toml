@@ -15,5 +15,6 @@ dependencies = [
     "bitsandbytes>=0.43.0",
     "sentencepiece>=0.2.0",
     "protobuf>=4.25.0",
+    "torchao>=0.16.0",
     "gguf>=0.10.0",
 ]
