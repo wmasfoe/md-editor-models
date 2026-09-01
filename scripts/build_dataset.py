@@ -7,10 +7,11 @@ from datasets import load_dataset
 import pangu
 
 # ==============================================================================
-# RFC-002 黄金平衡版 (35,000+ 条) 真实多领域开源语料流水线 (极致提速优化版)
-# 针对编辑器真实场景优化:
-# 1. 前缀窗口约束在光标前最近 250~350 字符 (消除 O(L^2) 无效注意力开销)
-# 2. 严格控制单样本在 512 Tokens 内，提升 GPU 吞吐量 8~10 倍
+# RFC-002 质量第一 (Quality-First) 满血多尺度真实开源语料流水线
+# 核心升级:
+# 1. 采用 Multi-Scale Context 动态窗口 (200~750字符)，让模型兼备局部短句衔接与多段落深层逻辑
+# 2. 50% 日常通用 + 50% 专业技术真实开源语料严格平衡
+# 3. 严格遵循 PSM 强后缀约束与 80~150字滚动提炼
 # ==============================================================================
 
 MIXED_TYPOS_MAP = {
@@ -78,7 +79,7 @@ def extract_markdown_outline_and_title(text):
 def build_dataset_rfc002():
     samples = []
     print("=" * 70)
-    print("🚀 开始流式构建 RFC-002 黄金平衡版 (35,000+ 条) 高吞吐真实数据集")
+    print("🚀 开始流式构建 RFC-002 「质量第一 (Quality-First)」多尺度真实平衡数据集")
     print("=" * 70)
 
     # --------------------------------------------------------------------------
@@ -180,8 +181,7 @@ def build_dataset_rfc002():
     print("📝 [3/5] 构建文档语义提炼与滚动 Refine 样本 (<|task_distill|>)...")
     for article in real_articles[:5000]:
         title, outline = extract_markdown_outline_and_title(article['text'])
-        # 紧凑窗口: 提取前 400 字核心片段，避免无谓计算
-        text_content = article['text'][:400].replace("\n\n", "\n")
+        text_content = article['text'][:600].replace("\n\n", "\n")
         
         distill_prompt = f"<|task_distill|>\n【文档标题】\n{title}\n\n【结构大纲】\n{outline}\n\n【正文核心片段】\n{text_content}"
         summary_target = f"主题：{title}；领域：{article['domain']}；要点：阐述了{title}的核心原理、结构组成与实际应用；风格：客观规范。"
@@ -194,9 +194,9 @@ def build_dataset_rfc002():
         })
 
     # --------------------------------------------------------------------------
-    # 4. 构建任务 3: <|task_completion|> ChatML + PSM 强后缀约束 FIM 续写 (46%)
+    # 4. 构建任务 3: <|task_completion|> 多尺度 (Multi-Scale) 动态窗口 FIM (46%)
     # --------------------------------------------------------------------------
-    print("⚡ [4/5] 构建 ChatML System Document Context + PSM 强约束 FIM 续写 (紧凑局部窗口)...")
+    print("⚡ [4/5] 构建 ChatML System Document Context + 多尺度动态窗口 PSM FIM 续写...")
     for article in real_articles[:16500]:
         raw = article['text']
         if len(raw) < 80:
@@ -212,16 +212,18 @@ def build_dataset_rfc002():
         if doc_len < 60:
             continue
             
-        start = random.randint(20, min(doc_len - 30, 800))
+        start = random.randint(20, min(doc_len - 30, 1200))
         middle_len = random.randint(10, 30) # 严格控制在 10~30 字短句
         
-        # ⚡ 核心优化：只截取光标前最近 250 字符 (真实编辑器局部上下文)，消除 O(L^2) 无效自注意力
-        prefix_start = max(0, start - 250)
+        # 🌟 核心升级：多尺度动态前缀窗口 (200~650字符)，让模型适应长短不同场景
+        window_size = random.choice([200, 350, 500, 650])
+        prefix_start = max(0, start - window_size)
         prefix = raw[prefix_start:start]
         middle = raw[start:start + middle_len]
         
         if is_psm_middle:
-            suffix = raw[start + middle_len:start + middle_len + 80]
+            suffix_len = random.choice([50, 100, 150])
+            suffix = raw[start + middle_len:start + middle_len + suffix_len]
         else:
             suffix = ""
             
@@ -266,7 +268,7 @@ def build_dataset_rfc002():
         for s in val_samples:
             f.write(json.dumps(s, ensure_ascii=False) + "\n")
             
-    print(f"\n🎉 RFC-002 黄金平衡版 (35,000+ 条) 高吞吐数据集构建完成！总计: {len(samples)} 条")
+    print(f"\n🎉 RFC-002 质量第一 (Quality-First) 全领域真实平衡数据集构建完成！总计: {len(samples)} 条")
     print(f"├── 训练集 (data/train.jsonl): {len(train_samples)} 条")
     print(f"└── 验证集 (data/val.jsonl):   {len(val_samples)} 条")
 
