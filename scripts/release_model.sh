@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# RFC-002 一键微调、量化与 GitHub Release 发布流水线脚本
+# RFC-002 一键微调、量化与 GitHub Release 多模型聚合发布流水线脚本
 # 用法: ./scripts/release_model.sh [VERSION] [BASE_MODEL]
 # 示例: ./scripts/release_model.sh v1.0.0 Qwen/Qwen2.5-0.5B-Instruct
+#       ./scripts/release_model.sh v1.0.0 Qwen/Qwen2.5-Coder-1.5B-Instruct
 # ==============================================================================
 
 set -e
@@ -28,20 +29,25 @@ F16_GGUF="${OUTPUT_DIR}/model-f16.gguf"
 if [[ "$BASE_MODEL" == *"1.5B"* ]]; then
   MODEL_ID="qwen2.5-1.5b-editor"
   TIER="standard"
+  DISPLAY_NAME="Qwen 2.5 1.5B (高精度进阶版)"
+  DESCRIPTION="更强复杂长句纠错与代码续写能力，推荐 M 系列 Mac 或高配 PC"
+  RECOMMENDED=""
 else
   MODEL_ID="qwen2.5-0.5b-editor"
   TIER="lite"
+  DISPLAY_NAME="Qwen 2.5 0.5B (轻量极速版)"
+  DESCRIPTION="首字延迟 <30ms，内存仅占 280MB，适合所有轻薄本与日常流畅写作"
+  RECOMMENDED="--recommended"
 fi
 
 FINAL_GGUF="${OUTPUT_DIR}/${MODEL_ID}-${VERSION}-Q4_K_M.gguf"
 MANIFEST_FILE="${OUTPUT_DIR}/manifest.json"
 
 echo "======================================================================"
-echo "🚀 开始执行 RFC-002 端侧小模型一键构建与发布流水线"
+echo "🚀 开始执行 RFC-002 多模型矩阵聚合发布流水线"
 echo "🔹 版本标签 (Version):  $VERSION"
-echo "🔹 目标基座 (Model):    $BASE_MODEL"
-echo "🔹 Python 执行器:       $PY_CMD"
-echo "🔹 最终 GGUF 文件:      $FINAL_GGUF"
+echo "🔹 目标基座 (Model):    $BASE_MODEL ($MODEL_ID - $TIER)"
+echo "🔹 目标 GGUF 文件:      $FINAL_GGUF"
 echo "======================================================================"
 
 # ------------------------------------------------------------------------------
@@ -113,46 +119,36 @@ echo "├── 文件大小: $(( GGUF_SIZE / 1024 / 1024 )) MB ($GGUF_SIZE 字�
 echo "└── SHA256:  $GGUF_SHA256"
 
 # ------------------------------------------------------------------------------
-# 步骤 4: 生成 md-editor 客户端 Manifest 描述文件
+# 步骤 4: 增量合并与生成客户端多模型 Manifest
 # ------------------------------------------------------------------------------
-echo -e "\n📋 [4/5] 生成客户端 Manifest 配置文件..."
+echo -e "\n📋 [4/5] 增量合并与更新客户端 Manifest.json..."
+
+# 尝试从现有 Release 下载已有的 manifest.json 进行合并
+if command -v gh &> /dev/null && gh release view "$VERSION" --repo "$REPO" &> /dev/null; then
+    echo "📥 发现现有 Release $VERSION，正在拉取已有 manifest.json 进行增量合并..."
+    gh release download "$VERSION" -p "manifest.json" -O "$MANIFEST_FILE" --repo "$REPO" --clobber || true
+fi
 
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/$(basename "$FINAL_GGUF")"
 
-cat <<EOF > "$MANIFEST_FILE"
-{
-  "modelId": "${MODEL_ID}",
-  "version": "${VERSION#v}",
-  "tier": "${TIER}",
-  "quant": "Q4_K_M",
-  "sizeBytes": ${GGUF_SIZE},
-  "sha256": "${GGUF_SHA256}",
-  "downloadUrl": "${DOWNLOAD_URL}",
-  "contextSize": 8192,
-  "languages": ["zh", "en", "ja", "ko", "ru", "fr"],
-  "specialTokens": {
-    "fimPrefix": "<|fim_prefix|>",
-    "fimSuffix": "<|fim_suffix|>",
-    "fimMiddle": "<|fim_middle|>",
-    "fimEnd": "<|fim_end|>",
-    "gecZh": "<|task_gec_zh|>",
-    "gecEn": "<|task_gec_en|>",
-    "gecJa": "<|task_gec_ja|>",
-    "gecKo": "<|task_gec_ko|>",
-    "gecRu": "<|task_gec_ru|>",
-    "gecFr": "<|task_gec_fr|>",
-    "punc": "<|task_punc|>",
-    "preserve": "<|task_preserve|>"
-  }
-}
-EOF
-
-echo "✅ Manifest 已生成: $MANIFEST_FILE"
+$PY_CMD scripts/update_manifest.py \
+  --manifest_path "$MANIFEST_FILE" \
+  --version "$VERSION" \
+  --model_id "$MODEL_ID" \
+  --tier "$TIER" \
+  --display_name "$DISPLAY_NAME" \
+  --description "$DESCRIPTION" \
+  --quant "Q4_K_M" \
+  --filename "$(basename "$FINAL_GGUF")" \
+  --size_bytes "$GGUF_SIZE" \
+  --sha256 "$GGUF_SHA256" \
+  --download_url "$DOWNLOAD_URL" \
+  $RECOMMENDED
 
 # ------------------------------------------------------------------------------
-# 步骤 5: 发布到 GitHub Releases
+# 步骤 5: 增量发布到 GitHub Releases
 # ------------------------------------------------------------------------------
-echo -e "\n🚀 [5/5] 发布检查..."
+echo -e "\n🚀 [5/5] 发布与资产同步检查..."
 
 HAS_GH_AUTH=false
 if command -v gh &> /dev/null; then
@@ -162,25 +158,23 @@ if command -v gh &> /dev/null; then
 fi
 
 if [ "$HAS_GH_AUTH" = true ]; then
-    echo "✨ 检测到 GitHub 凭证，正在发布产物至 GitHub Releases (${REPO}@${VERSION})..."
-    RELEASE_TITLE="md-editor SLM ${MODEL_ID} ${VERSION}"
-    RELEASE_NOTES="### md-editor 专属端侧小模型 (${VERSION})
+    echo "✨ 正在同步产物至 GitHub Releases (${REPO}@${VERSION})..."
+    RELEASE_TITLE="md-editor SLM Models Matrix (${VERSION})"
+    RELEASE_NOTES="### md-editor 专属端侧小模型矩阵 (${VERSION})
 
-#### 🌟 模型规格
-- **Base Model**: \`${BASE_MODEL}\`
-- **Format**: GGUF (\`Q4_K_M\`)
-- **Size**: \`$(( GGUF_SIZE / 1024 / 1024 )) MB\`
-- **SHA256**: \`${GGUF_SHA256}\`
-- **Supported Languages**: 中、英、日、韩、俄、法 (6 语种)
+支持多语种语法纠错 (Tuple JSON Diff)、排版标点规范化与极速行内 FIM 补全。
 
-#### 📋 客户端 Manifest 配置
+#### 📋 客户端多模型 Manifest
 \`\`\`json
 $(cat "$MANIFEST_FILE")
 \`\`\`
 "
     if gh release view "$VERSION" --repo "$REPO" &> /dev/null; then
+        echo "🔄 增量追加新模型到已有 Release $VERSION..."
         gh release upload "$VERSION" "$FINAL_GGUF" "$MANIFEST_FILE" --repo "$REPO" --clobber
+        gh release edit "$VERSION" --repo "$REPO" --notes "$RELEASE_NOTES"
     else
+        echo "✨ 创建全新 Release $VERSION..."
         gh release create "$VERSION" "$FINAL_GGUF" "$MANIFEST_FILE" \
           --repo "$REPO" \
           --title "$RELEASE_TITLE" \

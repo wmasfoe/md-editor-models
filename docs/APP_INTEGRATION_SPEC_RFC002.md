@@ -129,19 +129,16 @@ $$\text{格式：} [[start, end, "\text{待替换原文}", "\text{替换后文�
 
 ---
 
-### 协议六：GGUF 产物与 Release Manifest 规范
+### 协议六：GGUF 产物与 Release 多模型聚合 Manifest 规范
 
-官方每次发布模型时附带的标准 `manifest.json`：
+每个 Release Tag（如 `v1.0.0`）下聚合该版本所有模型规格，附带的统一 `manifest.json`：
 
 ```json
 {
-  "modelId": "md-editor-slm-0.5b",
   "version": "1.0.0",
-  "tier": "lite",
-  "quant": "Q4_K_M",
+  "updatedAt": "2026-09-01T14:30:00Z",
   "contextSize": 8192,
-  "sha256": "8f9b2c3d4e5f...",
-  "downloadUrl": "https://huggingface.co/wmasfoe/md-editor-slm/resolve/main/qwen2.5-0.5b-editor-Q4_K_M.gguf",
+  "languages": ["zh", "en", "ja", "ko", "ru", "fr"],
   "specialTokens": {
     "fimPrefix": "<|fim_prefix|>",
     "fimSuffix": "<|fim_suffix|>",
@@ -149,8 +146,39 @@ $$\text{格式：} [[start, end, "\text{待替换原文}", "\text{替换后文�
     "fimEnd": "<|fim_end|>",
     "gecZh": "<|task_gec_zh|>",
     "gecEn": "<|task_gec_en|>",
-    "punc": "<|task_punc|>"
-  }
+    "gecJa": "<|task_gec_ja|>",
+    "gecKo": "<|task_gec_ko|>",
+    "gecRu": "<|task_gec_ru|>",
+    "gecFr": "<|task_gec_fr|>",
+    "punc": "<|task_punc|>",
+    "preserve": "<|task_preserve|>"
+  },
+  "models": [
+    {
+      "modelId": "qwen2.5-0.5b-editor",
+      "tier": "lite",
+      "displayName": "Qwen 2.5 0.5B (轻量极速版)",
+      "description": "首字延迟 <30ms，内存仅占 280MB，适合所有轻薄本与日常流畅写作",
+      "quant": "Q4_K_M",
+      "filename": "qwen2.5-0.5b-editor-v1.0.0-Q4_K_M.gguf",
+      "sizeBytes": 251658240,
+      "sha256": "8f9b2c3d4e5f...",
+      "downloadUrl": "https://github.com/wmasfoe/md-editor-models/releases/download/v1.0.0/qwen2.5-0.5b-editor-v1.0.0-Q4_K_M.gguf",
+      "recommended": true
+    },
+    {
+      "modelId": "qwen2.5-1.5b-editor",
+      "tier": "standard",
+      "displayName": "Qwen 2.5 1.5B (高精度进阶版)",
+      "description": "更强复杂长句纠错与代码续写能力，推荐 M 系列 Mac 或高配 PC",
+      "quant": "Q4_K_M",
+      "filename": "qwen2.5-1.5b-editor-v1.0.0-Q4_K_M.gguf",
+      "sizeBytes": 1027604480,
+      "sha256": "4a5e6f7b8c9d...",
+      "downloadUrl": "https://github.com/wmasfoe/md-editor-models/releases/download/v1.0.0/qwen2.5-1.5b-editor-v1.0.0-Q4_K_M.gguf",
+      "recommended": false
+    }
+  ]
 }
 ```
 
