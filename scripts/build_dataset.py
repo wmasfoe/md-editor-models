@@ -8,16 +8,18 @@ import pangu
 
 # ==============================================================================
 # RFC-002 终极多任务数据构建流水线
-# 包含 6 语种、带原文锚点 Diff 语法、FIM 结构 A、纯删/纯插边界对齐
+# 纠错/标点任务采用紧凑元组 JSON: [[start, end, "original", "replacement"], ...]
+# FIM 任务采用原生流式标签: [Profile]\n<|fim_prefix|>...<|fim_suffix|>...<|fim_middle|>
 # ==============================================================================
 
 def unicode_len(s):
     return len(list(s))
 
-def extract_compact_diff(original, correct):
+def extract_compact_tuple_json(original, correct):
     """
-    提取带原文锚点的 Diff 结构: [start:end|"original"|"replacement"]
+    提取标准紧凑元组 JSON Diff 结构: [[start, end, "original", "replacement"], ...]
     使用 Unicode Code Points (字符计数) 作为偏移量基准
+    无错误时返回 "[]"
     """
     orig_chars = list(original)
     corr_chars = list(correct)
@@ -29,12 +31,9 @@ def extract_compact_diff(original, correct):
         if tag != 'equal':
             orig_slice = "".join(orig_chars[i1:i2])
             corr_slice = "".join(corr_chars[j1:j2])
-            # 转义内部双引号
-            escaped_orig = orig_slice.replace('"', '\\"')
-            escaped_corr = corr_slice.replace('"', '\\"')
-            diffs.append(f'[{i1}:{i2}|"{escaped_orig}"|"{escaped_corr}"]')
+            diffs.append([i1, i2, orig_slice, corr_slice])
             
-    return "".join(diffs) if diffs else ""
+    return json.dumps(diffs, ensure_ascii=False) if diffs else "[]"
 
 # 6 语种拼写/语法易错库
 ENGLISH_TYPOS = {
@@ -55,21 +54,17 @@ def corrupt_multilingual_gec(text, lang="zh"):
         if "does not" in corrupted and random.random() < 0.5:
             return corrupted.replace("does not", "do not", 1)
     elif lang == "ja":
-        # 日文助词/长音误用
         if "サーバー" in corrupted and random.random() < 0.6:
             return corrupted.replace("サーバー", "サーバ", 1)
         if "を行っています" in corrupted and random.random() < 0.6:
             return corrupted.replace("を行っています", "をしてます", 1)
     elif lang == "ko":
-        # 韩文常见拼写/助词
         if "되었습니다" in corrupted and random.random() < 0.6:
             return corrupted.replace("되었습니다", "됬습니다", 1)
     elif lang == "ru":
-        # 俄语软音符/前缀
         if "сделать" in corrupted and random.random() < 0.6:
             return corrupted.replace("сделать", "зделать", 1)
     elif lang == "fr":
-        # 法语重音缺失
         if "développement" in corrupted and random.random() < 0.6:
             return corrupted.replace("développement", "developpement", 1)
     return None
@@ -96,19 +91,14 @@ def build_dataset_rfc002():
     samples = []
     
     # 1. GEC 语法纠错 (中文 + 英/日/韩/俄/法)
-    print("1/5 Building GEC (6 Languages) with Compact Diff [start:end|\"orig\"|\"repl\"]...")
+    print("1/5 Building GEC (6 Languages) with Compact Tuple JSON [[start, end, \"orig\", \"repl\"]]...")
     
     # 中文 CSC 数据
     ds = load_dataset('shibing624/CSC', split='train', streaming=True)
     for row in ds.take(2500):
         orig, corr = row['original_text'], row['correct_text']
-        if orig == corr:
-            # 无错误样本：输出直接为空 (EOS)
-            samples.append({"messages": [{"role": "user", "content": f"<|task_gec_zh|>{orig}"}, {"role": "assistant", "content": ""}]})
-            continue
-        diff = extract_compact_diff(orig, corr)
-        if diff:
-            samples.append({"messages": [{"role": "user", "content": f"<|task_gec_zh|>{orig}"}, {"role": "assistant", "content": diff}]})
+        diff = extract_compact_tuple_json(orig, corr)
+        samples.append({"messages": [{"role": "user", "content": f"<|task_gec_zh|>{orig}"}, {"role": "assistant", "content": diff}]})
 
     # 多语种语料
     multilingual_seeds = {
@@ -123,13 +113,13 @@ def build_dataset_rfc002():
         for clean in texts * 300:
             bad = corrupt_multilingual_gec(clean, lang=lang)
             if bad:
-                diff = extract_compact_diff(bad, clean)
+                diff = extract_compact_tuple_json(bad, clean)
                 samples.append({"messages": [{"role": "user", "content": f"{token}{bad}"}, {"role": "assistant", "content": diff}]})
             else:
-                samples.append({"messages": [{"role": "user", "content": f"{token}{clean}"}, {"role": "assistant", "content": ""}]})
+                samples.append({"messages": [{"role": "user", "content": f"{token}{clean}"}, {"role": "assistant", "content": "[]"}]})
 
     # 2. 标点与排版规范 (<|task_punc|>)
-    print("2/5 Building Punctuation & Typography with Compact Diff...")
+    print("2/5 Building Punctuation & Typography with Compact Tuple JSON...")
     punc_seeds = [
         "使用 React 开发桌面端，性能提升了 30% 以上 and fixed all memory leaks.",
         "我们在 macOS、Windows 和 Linux 系统上都进行了全面兼容性测试。",
@@ -142,10 +132,10 @@ def build_dataset_rfc002():
         std = pangu.spacing_text(clean)
         bad = corrupt_punc(std)
         if bad:
-            diff = extract_compact_diff(bad, std)
+            diff = extract_compact_tuple_json(bad, std)
             samples.append({"messages": [{"role": "user", "content": f"<|task_punc|>{bad}"}, {"role": "assistant", "content": diff}]})
         else:
-            samples.append({"messages": [{"role": "user", "content": f"<|task_punc|>{std}"}, {"role": "assistant", "content": ""}]})
+            samples.append({"messages": [{"role": "user", "content": f"<|task_punc|>{std}"}, {"role": "assistant", "content": "[]"}]})
 
     # 3. FIM 极速补全（采用结构 A：画像置顶）
     print("3/5 Building FIM (Structure A with Prefix Profile)...")
@@ -168,8 +158,8 @@ def build_dataset_rfc002():
 
     # 4. 边界用例：纯删除与纯插入
     print("4/5 Injecting Pure Delete and Pure Insert Edge Cases...")
-    samples.append({"messages": [{"role": "user", "content": "<|task_gec_zh|>这是多余的的内容"}, {"role": "assistant", "content": '[4:6|"的的"|"的"]'}]})
-    samples.append({"messages": [{"role": "user", "content": "<|task_gec_zh|>我们必须严格遵相关规定"}, {"role": "assistant", "content": '[6:6|""|"守"]'}]})
+    samples.append({"messages": [{"role": "user", "content": "<|task_gec_zh|>这是多余的的内容"}, {"role": "assistant", "content": '[[4, 6, "的的", "的"]]'}]})
+    samples.append({"messages": [{"role": "user", "content": "<|task_gec_zh|>我们必须严格遵相关规定"}, {"role": "assistant", "content": '[[6, 6, "", "守"]]'}]})
 
     # 5. 格式保真 (<|task_preserve|>)
     print("5/5 Building Format Preservation Cases...")
@@ -180,7 +170,7 @@ def build_dataset_rfc002():
         "| a | b |\n|---|---|\n| 1 | 2 |"
     ] * 200
     for p in preserves:
-        samples.append({"messages": [{"role": "user", "content": f"<|task_preserve|>{p}"}, {"role": "assistant", "content": ""}]})
+        samples.append({"messages": [{"role": "user", "content": f"<|task_preserve|>{p}"}, {"role": "assistant", "content": "[]"}]})
 
     random.seed(42)
     random.shuffle(samples)
@@ -197,7 +187,7 @@ def build_dataset_rfc002():
         for s in val_samples:
             f.write(json.dumps(s, ensure_ascii=False) + "\n")
             
-    print(f"\n🎉 RFC-002 终极多任务数据集构建完成！总计: {len(samples)} 条")
+    print(f"\n🎉 RFC-002 紧凑元组 JSON 数据集构建完成！总计: {len(samples)} 条")
     print(f"├── 训练集 (data/train.jsonl): {len(train_samples)} 条")
     print(f"└── 验证集 (data/val.jsonl):   {len(val_samples)} 条")
 

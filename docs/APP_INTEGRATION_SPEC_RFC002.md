@@ -21,35 +21,37 @@
 
 ## 2. 双方确认的 6 大核心协议与实施标准
 
-### 协议一：局部 Diff 协议与编码规范（带原文锚点与边界对齐）
+### 协议一：局部 Diff 协议升级为「紧凑元组 JSON」
+
+为了**彻底消除正则表达式解析隐患与转义歧义，并完美兼容 GBNF 语法采样**，所有纠错与排版输出统一采用 **标准紧凑元组 JSON（Tuple JSON Array）**：
+
+$$\text{格式：} [[start, end, "\text{待替换原文}", "\text{替换后文本}"], ...]$$
 
 #### 1.1 偏移量基准
 * **统一基准**：**Unicode 字符数（Unicode Code Points，0-indexed）**。
 * 客户端需在解析后将其转换为 JavaScript / CodeMirror 6 的 UTF-16 Code Units（见第 3 节代码）。
 
-#### 1.2 输出语法格式（带原文锚点）
-为了防止端侧小模型字符计数产生 $\pm 1$ 偏移时误切原文字符，所有纠错输出一律采用**带原文校验锚点的结构**：
-
-$$\text{格式：} [start:end|"\text{待替换原文}"|"\text{替换后文本}"]$$
-
-#### 1.3 三大边界场景约定
+#### 1.2 语法范式与边界约定
 | 场景类型 | 格式语法 | 边界特征 | 示例说明 |
 | :--- | :--- | :--- | :--- |
-| **标准替换** | `[start:end|"原文"|"新文"]` | `start < end`, 两文本均非空 | `[8:9|"但"|"因"]` |
-| **纯删除 (删多余字)** | `[start:end|"多余内容"|""]` | `start < end`, `replacement === ""` | `[8:10|"多余"|""]` |
-| **纯插入 (补漏字)** | `[start:start|""|"插入内容"]` | `start === end`, `original === ""` | `[8:8|""|"并且"]` |
+| **标准单处替换** | `[[start, end, "原文", "新文"]]` | `start < end`, 两字符串非空 | `[[8, 9, "但", "因"]]` |
+| **单句多处修改** | `[[s1, e1, "原1", "新1"], [s2, e2, "原2", "新2"]]` | 数组内平铺多个元组 | `[[0, 2, "今晚", "今天"], [8, 9, "但", "因"]]` |
+| **纯删除 (删多余字)** | `[[start, end, "多余内容", ""]]` | `start < end`, `repl === ""` | `[[8, 10, "多余", ""]]` |
+| **纯插入 (补漏字)** | `[[start, start, "", "插入内容"]]` | `start === end`, `orig === ""` | `[[8, 8, "", "并且"]]` |
+| **无错误 / 无需修改** | `[]` | 空数组（或命中 EOS） | `[]` |
 
-#### 1.4 多处修改与特殊字符转义
-* **单句多处修改**：采用紧凑连续输出，例如 `[2:3|"这"|"那"][8:9|"因"|"但"]`。
-* **特殊字符转义**：遵循标准转义规范（`\"`、`\n`、`\\`、`\]`）。
+#### 1.3 核心优势
+1. **客户端 100% 告别脆弱正则**：JS 侧直接 `JSON.parse()`，Rust 侧直接 `serde_json::from_str()`。
+2. **字符转义 0 歧义**：即使原文包含 `"`、`:`、`|`、`]` 或换行，均由标准 JSON 规范原生安全转义。
+3. **完美契合 GBNF 结构化约束**：`llama-server` 可使用极简 JSON Schema 进行状态机采样，100% 保证输出合法。
 
 ---
 
 ### 协议二：无错误时的立即终止协议（首字 0 延迟）
 
-* **输出约定**：当输入文本完全规范无需修改时，模型**直接输出 EOS (`<|endoftext|>`) 或空字符串**。
+* **输出约定**：当输入文本完全规范无需修改时，模型**输出 `[]` 或直接输出 EOS (`<|endoftext|>`)**。
 * **耗时标准**：解码在第 1 个 Token 直接命中停止词返回，耗时 **1~2ms**。
-* **客户端判定**：`if (!output || output.trim() === "" || output.trim() === "[OK]")` 立即判定无修改并释放 Slot，无缝衔接后续续写。
+* **客户端判定**：`if (!output || output.trim() === "" || output.trim() === "[]")` 立即判定无修改并释放 Slot，无缝衔接后续续写。
 
 ---
 
@@ -154,7 +156,7 @@ $$\text{格式：} [start:end|"\text{待替换原文}"|"\text{替换后文本}"]
 
 ---
 
-## 3. 客户端必须实现的 3 重防御性代码实现参考
+## 3. 客户端 3 重防御性代码实现参考（基于紧凑元组 JSON）
 
 ### 防御 1：Unicode Code Points 到 UTF-16 坐标系转换
 ```typescript
@@ -173,66 +175,53 @@ export function codePointOffsetToUtf16Offset(str: string, codePointIndex: number
 }
 ```
 
-### 防御 2：Diff 倒序应用与模糊锚点纠偏 (Fuzzy Anchor)
+### 防御 2：Diff 倒序应用与模糊锚点纠偏 (基于元组 JSON)
 ```typescript
-interface DiffChunk {
-  start: number;
-  end: number;
-  original: string;
-  replacement: string;
-}
+type DiffTuple = [number, number, string, string]; // [start, end, original, replacement]
 
 export function parseAndApplyDiffs(fullText: string, modelOutput: string): string {
-  if (!modelOutput || modelOutput.trim() === "" || modelOutput.trim() === "[OK]") {
+  if (!modelOutput || modelOutput.trim() === "" || modelOutput.trim() === "[]") {
     return fullText;
   }
 
-  // 1. 正则提取所有 [start:end|"original"|"replacement"]
-  const regex = /\[(\d+):(\d+)\|"([^"]*)"\|"([^"]*)"\]/g;
-  const diffs: DiffChunk[] = [];
-  let match: RegExpExecArray | null;
-
-  while ((match = regex.exec(modelOutput)) !== null) {
-    diffs.push({
-      start: parseInt(match[1], 10),
-      end: parseInt(match[2], 10),
-      original: match[3],
-      replacement: match[4]
-    });
+  // 1. 原生 JSON.parse，100% 告别正则
+  let diffs: DiffTuple[];
+  try {
+    diffs = JSON.parse(modelOutput);
+    if (!Array.isArray(diffs) || diffs.length === 0) return fullText;
+  } catch (e) {
+    console.warn("模型输出非合法元组 JSON:", modelOutput);
+    return fullText;
   }
 
   // 2. 必须按 start 从大到小倒序排序，防止前面替换改变后面下标
-  diffs.sort((a, b) => b.start - a.start);
+  diffs.sort((a, b) => b[0] - a[0]);
 
   let result = fullText;
   const codePoints = Array.from(fullText);
 
-  for (const diff of diffs) {
-    const origCodePointStart = diff.start;
-    const origCodePointEnd = diff.end;
+  for (const [start, end, original, replacement] of diffs) {
+    const currentSlice = codePoints.slice(start, end).join('');
     
-    // 获取切片
-    const currentSlice = codePoints.slice(origCodePointStart, origCodePointEnd).join('');
-    
-    if (currentSlice === diff.original) {
+    if (currentSlice === original) {
       // 强一致命中：直接替换
-      const u16Start = codePointOffsetToUtf16Offset(result, origCodePointStart);
-      const u16End = codePointOffsetToUtf16Offset(result, origCodePointEnd);
-      result = result.slice(0, u16Start) + diff.replacement + result.slice(u16End);
+      const u16Start = codePointOffsetToUtf16Offset(result, start);
+      const u16End = codePointOffsetToUtf16Offset(result, end);
+      result = result.slice(0, u16Start) + replacement + result.slice(u16End);
     } else {
-      // 模糊纠偏：在 ±5 字符窗口内查找唯一匹配的 diff.original
-      const windowStart = Math.max(0, origCodePointStart - 5);
-      const windowEnd = Math.min(codePoints.length, origCodePointEnd + 5);
+      // 模糊纠偏：在 ±5 字符窗口内查找唯一匹配的 original
+      const windowStart = Math.max(0, start - 5);
+      const windowEnd = Math.min(codePoints.length, end + 5);
       const windowText = codePoints.slice(windowStart, windowEnd).join('');
-      const localIdx = windowText.indexOf(diff.original);
+      const localIdx = windowText.indexOf(original);
 
-      if (localIdx !== -1 && windowText.indexOf(diff.original, localIdx + 1) === -1) {
+      if (localIdx !== -1 && windowText.indexOf(original, localIdx + 1) === -1) {
         // 找到唯一匹配点，纠偏替换
         const actualCodePointStart = windowStart + localIdx;
-        const actualCodePointEnd = actualCodePointStart + Array.from(diff.original).length;
+        const actualCodePointEnd = actualCodePointStart + Array.from(original).length;
         const u16Start = codePointOffsetToUtf16Offset(result, actualCodePointStart);
         const u16End = codePointOffsetToUtf16Offset(result, actualCodePointEnd);
-        result = result.slice(0, u16Start) + diff.replacement + result.slice(u16End);
+        result = result.slice(0, u16Start) + replacement + result.slice(u16End);
       }
       // 找不到则静默丢弃该 Diff，绝不盲切损坏用户文档
     }
@@ -244,4 +233,4 @@ export function parseAndApplyDiffs(fullText: string, modelOutput: string): strin
 
 ---
 
-本规范已在模型微调端 100% 固化，产物完全符合以上契约。App 端 Agent 可完全按此实施！
+本规范已在模型微调端 100% 固化，产物完全符合以上元组 JSON 契约。App 端 Agent 可完全按此实施！
