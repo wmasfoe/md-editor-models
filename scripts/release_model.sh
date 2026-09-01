@@ -90,7 +90,7 @@ else
       --val_file "data/val.jsonl" \
       --output_dir "$LORA_DIR" \
       --num_train_epochs 3 \
-      --batch_size 48 \
+      --batch_size 32 \
       --gradient_accumulation_steps 1 \
       --learning_rate 2e-4 \
       --lora_r 32 \

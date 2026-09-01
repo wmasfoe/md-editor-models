@@ -40,7 +40,7 @@ def parse_args():
     
     # 训练超参数 (针对 L4 / 现代 GPU 高吞吐优化)
     parser.add_argument("--num_train_epochs", type=int, default=3, help="Total training epochs")
-    parser.add_argument("--batch_size", type=int, default=48, help="Per-device batch size (48 for L4)")
+    parser.add_argument("--batch_size", type=int, default=32, help="Per-device batch size (32 for L4)")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
     parser.add_argument("--learning_rate", type=float, default=2e-4, help="Initial learning rate")
     parser.add_argument("--max_seq_length", type=int, default=768, help="Maximum sequence length (768 for multi-scale context)")
@@ -152,7 +152,7 @@ def main():
         fp16=torch.cuda.is_available() and not torch.cuda.is_bf16_supported(),
         lr_scheduler_type="cosine",
         max_length=args.max_seq_length,
-        dataloader_num_workers=4 if os.cpu_count() and os.cpu_count() > 2 else 0,
+        dataloader_num_workers=2 if os.cpu_count() and os.cpu_count() >= 2 else 0,
         dataloader_pin_memory=True if torch.cuda.is_available() else False,
         report_to="none"
     )
