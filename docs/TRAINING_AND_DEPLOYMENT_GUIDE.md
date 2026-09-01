@@ -1,144 +1,81 @@
-# RFC-001 模型微调、量化与部署完整指南
+# md-editor-models 微调、量化与部署全流程手册 (RFC-002 终极版)
 
-本指南详细记录了如何按照 **RFC-001 技术架构与实施规范**，完成从**多任务语料构建、SFT 监督微调、质量评测、GGUF 量化**到**接入 md-editor 客户端**的全流程操作。
-
----
-
-## 目录
-1. [RFC-001 多任务协议与优势](#1-rfc-001-多任务协议与优势)
-2. [环境准备与依赖安装](#2-环境准备与依赖安装)
-3. [步骤一：生成 4 任务平衡数据集](#3-步骤一生成-4-任务平衡数据集)
-4. [步骤二：执行 SFT 微调训练 (GPU)](#4-步骤二执行-sft-微调训练-gpu)
-5. [步骤三：模型自动化验证与评测](#5-步骤三模型自动化验证与评测)
-6. [步骤四：GGUF 转换与 Q4_K_M 量化](#6-步骤四gguf-转换与-q4_k_m-量化)
-7. [步骤五：客户端推理参数配置与接入](#7-步骤五客户端推理参数配置与接入)
+> 本指南专为模型微调工程开发人员设计，涵盖从**多领域真实开源语料构建**、**ChatML + `<|task_distill|>` SFT 微调**、**llama.cpp Q4_K_M 量化** 到 **GitHub Releases 自动化发版** 的完整工业级闭环流程。
 
 ---
 
-## 1. RFC-001 多任务协议与优势
+## 1. 核心架构与多任务规范
 
-相较于传统的 JSON Schema 包裹方式，RFC-001 采用**裸流式标签与 FIM (Fill-In-The-Middle)** 范式，具有以下质的突破：
+模型微调基于 **Qwen2.5-0.5B / 1.5B**，通过固化专用控制符与注入 `[Document Context]` 实现端侧写作辅助：
 
-* **行内补全首字延迟压低至 <50ms**：模型在 `<|fim_middle|>` 后直接吐出裸文本，无任何冗余 Token 消耗。
-* **极紧凑的任务指令**：`[TASK: GRAMMAR]`、`[TASK: PUNCTUATE]`、`[TASK: PRESERVE]`。
-* **100% 保护 Markdown 语法树**：包含 LaTeX（`$$...$$`）、YAML Frontmatter、复杂表格的保真负样本。
+| 任务类型 | 控制 Token | 输入格式 | 目标输出格式 |
+| :--- | :--- | :--- | :--- |
+| **异步文档提炼** | `<|task_distill|>` | 前 800 字内容或标题大纲 | `主题：...；领域：...；风格：...` (<=30字) |
+| **行内 FIM 续写** | `<|task_completion|>` + FIM | ChatML System + `<|fim_prefix|>...<|fim_suffix|>` | `<|fim_middle|>...<|fim_end|>` (10~30字) |
+| **语法与错字纠错** | `<|task_gec_zh|>` 等 | 待检测句子 | `[[start, end, "orig", "repl"]]` (无错输出 `[]`) |
+| **标点排版规范** | `<|task_punc|>` | 待排版句子 | 盘古之白与全半角替换元组 JSON |
 
 ---
 
-## 2. 环境准备与依赖安装
+## 2. 语料 1:1 双轨平衡与真实数据源
 
-本仓库使用 [uv](https://docs.astral.sh/uv/) 进行依赖与虚拟环境管理：
+**100% 拒绝人工模板！** 语料直接流式对接国际权威开源数据集：
+* **50% 日常生活通用写作**：`wikimedia/wikipedia` (多语种生活常识/历史/艺术)、`BelleGroup/train_1M_CN` (日常随笔/游记/办公周报/食谱)；
+* **50% 专业技术工程写作**：`bigcode/the-stack-v2` / `codeparrot/github-code` (GitHub 真实 Markdown)、`HuggingFaceTB/smollm-corpus` (技术教程/架构指南)。
+
+---
+
+## 3. 本地环境准备 (uv)
+
+本项目使用现代 Python 包管理器 `uv` 进行极速依赖管理：
 
 ```bash
-# 1. 克隆本仓库
+# 1. 克隆代码仓库
 git clone https://github.com/wmasfoe/md-editor-models.git
 cd md-editor-models
 
-# 2. 安装所有 Python 依赖
+# 2. 安装 uv (如未安装)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 3. 一键同步全套依赖 (PyTorch, TRL, PEFT, llama.cpp 依赖)
 uv sync
 ```
 
 ---
 
-## 3. 步骤一：生成 4 任务平衡数据集
-
-运行数据构建脚本，自动生成符合 RFC-001 比例的多任务训练集与验证集：
+## 4. 构建真实平衡数据集 (`scripts/build_dataset.py`)
 
 ```bash
+# 执行多领域数据流式抽取与 AST 大纲切分
 uv run python scripts/build_dataset.py
 ```
-
-* **数据集配比**：
-  * `[35%] GEC 语法纠错`：中英文时态、拼写、主谓一致。
-  * `[25%] 标点与排版规范`：盘古之白空格、全半角标点、中英弯直引号。
-  * `[30%] FIM 行内补全`：基于前缀与后缀的极速中间文本预测。
-  * `[10%] 格式保真负样本`：保护 LaTeX、YAML Frontmatter、代码块不被破坏。
-* **产物位置**：`data/train.jsonl`（训练集）与 `data/val.jsonl`（验证集）。
+* **产物**：
+  * `data/train.jsonl` (~22,500 条)
+  * `data/val.jsonl` (~2,500 条)
 
 ---
 
-## 4. 步骤二：执行 SFT 微调训练 (GPU)
+## 5. 一键训练、量化与发布到 GitHub Releases
 
-> 💡 **算力建议**：微调可放在 **Google Colab (免费 T4)**、**AutoDL (单卡 4090/A10，约 1.5 元/时)** 或本地 NVIDIA 显卡上运行。
+### 5.1 在 Google Colab (L4 GPU / T4 GPU) 上一键运行
+直接打开 Notebook 运行即可：
+👉 **[Open in Colab](https://colab.research.google.com/github/wmasfoe/md-editor-models/blob/master/notebooks/train_and_release_t4.ipynb)**
 
-### 方式 A：一键启动 (推荐)
+### 5.2 在任意 GPU 服务器命令行上运行
 ```bash
-# 默认基于 Qwen/Qwen2.5-0.5B-Instruct 进行 SFT 微调并自动合并权重
-./scripts/run_train.sh
+# 发布 0.5B 轻量极速版
+./scripts/release_model.sh v1.0.0 Qwen/Qwen2.5-0.5B-Instruct
 
-# 或指定 1.5B 进阶模型
-./scripts/run_train.sh Qwen/Qwen2.5-Coder-1.5B-Instruct
-```
-
-### 方式 B：自定义超参数运行
-```bash
-uv run python train_sft.py \
-  --model_name_or_path Qwen/Qwen2.5-0.5B-Instruct \
-  --train_file data/train.jsonl \
-  --val_file data/val.jsonl \
-  --output_dir output/qwen-0.5b-editor-lora \
-  --num_train_epochs 3 \
-  --batch_size 4 \
-  --gradient_accumulation_steps 4 \
-  --learning_rate 2e-4 \
-  --lora_r 16 \
-  --lora_alpha 32 \
-  --merge_and_save \
-  --merged_output_dir output/qwen-0.5b-editor-merged
-```
-
-* **产出物**：`output/qwen-0.5b-editor-merged/`（已合并的完整独立模型目录）。
-
----
-
-## 5. 步骤三：模型自动化验证与评测
-
-运行评测脚本，测试微调后的模型在多任务下的准确率与格式稳定性：
-
-```bash
-uv run python scripts/evaluate.py --model_path output/qwen-0.5b-editor-merged
+# 发布 1.5B 高精度进阶版 (自动增量追加到同一 Release)
+./scripts/release_model.sh v1.0.0 Qwen/Qwen2.5-Coder-1.5B-Instruct
 ```
 
 ---
 
-## 6. 步骤四：GGUF 转换与 Q4_K_M 量化
+## 6. 模型产物校验与评测
 
-使用 [llama.cpp](https://github.com/ggerganov/llama.cpp) 将模型转换为端侧专用的 `Q4_K_M` GGUF 二进制：
+运行自动化测试脚本，验证 GEC 语法纠错、无错误快速终止、FIM 续写以及 `<|task_distill|>` 的准确率：
 
 ```bash
-# 1. 编译 llama.cpp
-git clone https://github.com/ggerganov/llama.cpp
-cd llama.cpp && cmake -B build && cmake --build build --config Release -j
-
-# 2. 转换为全精度 GGUF (FP16)
-python3 convert_hf_to_gguf.py ../output/qwen-0.5b-editor-merged/ --outfile ../output/model-f16.gguf
-
-# 3. 量化为 Q4_K_M (体积仅 ~350MB)
-./build/bin/llama-quantize ../output/model-f16.gguf ../output/qwen2.5-0.5b-editor-Q4_K_M.gguf Q4_K_M
-```
-
----
-
-## 7. 步骤五：客户端推理参数配置与接入
-
-在 `md-editor` 客户端（或任何基于 `llama-server` / `llama.cpp` 的宿主）中配置推荐的解码参数：
-
-| 任务场景 | Temperature | Top-P | Max Tokens | Stop Tokens |
-| :--- | :--- | :--- | :--- | :--- |
-| **行内补全 (Ghost Text)** | `0.2` | `0.85` | `24` | `\n`, `<|fim_end|>`, `` ` `` |
-| **语法与病句修复** | `0.0` (Greedy) | `1.00` | `原句长度 + 32` | `\n`, `[TASK:` |
-| **标点与排版规范** | `0.0` (Greedy) | `1.00` | `原句长度 + 16` | `\n`, `[TASK:` |
-| **段落级扩写/续写** | `0.65` | `0.90` | `128 ~ 256` | `[TASK:`, 用户主动中断 |
-
-### 客户端接入配置示例 (Manifest)
-```json
-{
-  "id": "qwen2.5-0.5b-editor",
-  "name": "Lite 0.5B (RFC-001 高速补全版)",
-  "version": "1.0.0",
-  "sizeBytes": 367001600,
-  "downloadUrl": "https://huggingface.co/your-org/md-editor-slm/resolve/main/qwen2.5-0.5b-editor-Q4_K_M.gguf",
-  "sha256": "8f9b2c3d4e5f...",
-  "recommendedMinRamGb": 4
-}
+uv run python scripts/evaluate.py --model_path output/qwen-editor-merged
 ```
