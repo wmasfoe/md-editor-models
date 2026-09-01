@@ -7,7 +7,7 @@ from datasets import load_dataset
 import pangu
 
 # ==============================================================================
-# RFC-002 终极满血版 (50,000+ 条) 真实多领域开源语料流水线
+# RFC-002 黄金平衡版 (35,000+ 条) 真实多领域开源语料流水线
 # 涵盖:
 # 1. <|task_gec_mixed|> (中英文混排专项纠错: 盘古空格+大小写+冠词+术语拼写)
 # 2. <|task_gec_zh|>, <|task_gec_en|>, <|task_gec_ja|>, 等多语种纯纠错 (含空输出 [] 负样本)
@@ -81,7 +81,7 @@ def extract_markdown_outline_and_title(text):
 def build_dataset_rfc002():
     samples = []
     print("=" * 70)
-    print("🚀 开始流式构建 RFC-002 满血版 50,000+ 条全领域真实平衡数据集")
+    print("🚀 开始流式构建 RFC-002 黄金平衡版 35,000+ 条全领域真实平衡数据集")
     print("=" * 70)
 
     # --------------------------------------------------------------------------
@@ -93,7 +93,7 @@ def build_dataset_rfc002():
     # 1.1 中文维基百科 (涵盖日常、历史、地理、科学、哲学、艺术、美食)
     try:
         ds_wiki_zh = load_dataset('wikimedia/wikipedia', '20231101.zh', split='train', streaming=True)
-        for row in ds_wiki_zh.take(12000):
+        for row in ds_wiki_zh.take(8000):
             title = row.get('title', '').strip()
             text = row.get('text', '').strip()
             if len(text) > 150 and not text.startswith("#REDIRECT"):
@@ -104,7 +104,7 @@ def build_dataset_rfc002():
     # 1.2 真实人类中文日常随笔与办公长文 (BelleGroup)
     try:
         ds_belle = load_dataset('BelleGroup/train_1M_CN', split='train', streaming=True)
-        for row in ds_belle.take(10000):
+        for row in ds_belle.take(7000):
             inst = row.get('instruction', '').strip()
             out = row.get('output', '').strip()
             full_text = f"# {inst[:40]}\n\n{out}"
@@ -116,7 +116,7 @@ def build_dataset_rfc002():
     # 1.3 英文多领域教科书与技术指南 (SmolLM Cosmopedia)
     try:
         ds_smol = load_dataset('HuggingFaceTB/smollm-corpus', 'cosmopedia-v2', split='train', streaming=True)
-        for row in ds_smol.take(10000):
+        for row in ds_smol.take(7000):
             text = row.get('text', '').strip()
             if len(text) > 150:
                 real_articles.append({"title": "Technical & Educational Guide", "text": text, "lang": "en", "domain": "技术与教学"})
@@ -126,7 +126,7 @@ def build_dataset_rfc002():
     print(f"✅ 成功加载 {len(real_articles)} 篇真实人类多领域长文章！")
 
     # --------------------------------------------------------------------------
-    # 2. 构建任务 1: <|task_gec_mixed|> 中英文混排专项纠错 (25%)
+    # 2. 构建任务 1: <|task_gec_mixed|> 中英文混排专项纠错 (23%)
     # --------------------------------------------------------------------------
     print("🔥 [2/5] 构建中英文混排专项纠错 (<|task_gec_mixed|>) 与 GEC 负样本...")
     mixed_base_sentences = [
@@ -142,7 +142,7 @@ def build_dataset_rfc002():
         "请在 Nginx 配置文件中开启 Gzip 压缩以优化静态资源加载速度。",
         "前端通过 WebSocket 与后端保持长连接，实现消息的实时推流。",
         "微服务网关基于 Spring Cloud Gateway 实现统一的鉴权与限流。"
-    ] * 1000
+    ] * 700
 
     for clean_std in mixed_base_sentences:
         clean_std_pangu = pangu.spacing_text(clean_std)
@@ -167,7 +167,7 @@ def build_dataset_rfc002():
     # 中文 CSC 语法纠错库
     try:
         ds_csc = load_dataset('shibing624/CSC', split='train', streaming=True)
-        for row in ds_csc.take(7000):
+        for row in ds_csc.take(5000):
             orig, corr = row['original_text'], row['correct_text']
             if orig == corr:
                 samples.append({"messages": [{"role": "user", "content": f"<|task_gec_zh|>{orig}"}, {"role": "assistant", "content": "[]"}]})
@@ -178,10 +178,10 @@ def build_dataset_rfc002():
         print(f"⚠️ CSC 数据集拉取提示: {e}")
 
     # --------------------------------------------------------------------------
-    # 3. 构建任务 2: <|task_distill|> 80~150字文档语义提炼与滚动 Refine (12%)
+    # 3. 构建任务 2: <|task_distill|> 80~150字文档语义提炼与滚动 Refine (14%)
     # --------------------------------------------------------------------------
     print("📝 [3/5] 构建文档语义提炼与滚动 Refine 样本 (<|task_distill|>)...")
-    for article in real_articles[:6500]:
+    for article in real_articles[:5000]:
         title, outline = extract_markdown_outline_and_title(article['text'])
         text_content = article['text'][:800].replace("\n\n", "\n")
         
@@ -196,10 +196,10 @@ def build_dataset_rfc002():
         })
 
     # --------------------------------------------------------------------------
-    # 4. 构建任务 3: <|task_completion|> ChatML + PSM 强后缀约束 FIM 续写 (45%)
+    # 4. 构建任务 3: <|task_completion|> ChatML + PSM 强后缀约束 FIM 续写 (46%)
     # --------------------------------------------------------------------------
     print("⚡ [4/5] 构建 ChatML System Document Context + PSM 强约束 FIM 续写...")
-    for article in real_articles:
+    for article in real_articles[:16500]:
         raw = article['text']
         if len(raw) < 80:
             continue
@@ -209,10 +209,7 @@ def build_dataset_rfc002():
         
         system_prompt = f"[User Style Profile]\n- Language: Mixed (zh-en)\n- Preferred: Markdown\n- Tone: Clear, concise\n\n[Document Context]\n- Title: {title}\n- Outline: {outline}\n- Topic: {topic_summary}"
         
-        # 60% 样本为 PSM 强后缀约束 (中间挖空 10~30 字，后文非空)
-        # 40% 样本为行尾 Ghost Text 补全
         is_psm_middle = random.random() < 0.6
-        
         doc_len = len(raw)
         if doc_len < 60:
             continue
@@ -270,7 +267,7 @@ def build_dataset_rfc002():
         for s in val_samples:
             f.write(json.dumps(s, ensure_ascii=False) + "\n")
             
-    print(f"\n🎉 RFC-002 满血版全领域真实平衡数据集构建完成！总计: {len(samples)} 条")
+    print(f"\n🎉 RFC-002 黄金平衡版 (35,000+ 条) 全领域真实平衡数据集构建完成！总计: {len(samples)} 条")
     print(f"├── 训练集 (data/train.jsonl): {len(train_samples)} 条")
     print(f"└── 验证集 (data/val.jsonl):   {len(val_samples)} 条")
 
