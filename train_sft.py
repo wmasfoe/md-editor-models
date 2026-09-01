@@ -47,9 +47,9 @@ def parse_args():
     parser.add_argument("--warmup_steps", type=int, default=30, help="Warmup steps")
     parser.add_argument("--logging_steps", type=int, default=20, help="Log metrics every N steps")
     
-    # LoRA / QLoRA 配置
-    parser.add_argument("--lora_r", type=int, default=16, help="LoRA rank")
-    parser.add_argument("--lora_alpha", type=int, default=32, help="LoRA scaling factor")
+    # LoRA / QLoRA 配置 (针对 50,000+ 样本扩容)
+    parser.add_argument("--lora_r", type=int, default=32, help="LoRA rank")
+    parser.add_argument("--lora_alpha", type=int, default=64, help="LoRA scaling factor")
     parser.add_argument("--lora_dropout", type=float, default=0.05, help="LoRA dropout rate")
     parser.add_argument("--use_qlora", action="store_true", help="Enable 4-bit QLoRA to save VRAM")
     

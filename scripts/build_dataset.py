@@ -7,7 +7,7 @@ from datasets import load_dataset
 import pangu
 
 # ==============================================================================
-# RFC-002 终极多任务数据构建流水线 (无假模板，100% 真实多领域开源语料)
+# RFC-002 终极满血版 (50,000+ 条) 真实多领域开源语料流水线
 # 涵盖:
 # 1. <|task_gec_mixed|> (中英文混排专项纠错: 盘古空格+大小写+冠词+术语拼写)
 # 2. <|task_gec_zh|>, <|task_gec_en|>, <|task_gec_ja|>, 等多语种纯纠错 (含空输出 [] 负样本)
@@ -16,13 +16,14 @@ import pangu
 # 5. <|task_punc|> 与 <|task_preserve|>
 # ==============================================================================
 
-# 真实常见中英文混排技术与日常词汇拼写纠错字典
 MIXED_TYPOS_MAP = {
     "inovke": "invoke", "componet": "component", "asnyc": "async",
     "definately": "definitely", "seperate": "separate", "recieve": "receive",
     "accomodate": "accommodate", "neccessary": "necessary", "succesful": "successful",
     "archetecture": "architecture", "respons": "response", "databse": "database",
-    "middlware": "middleware", "environemnt": "environment", "configration": "configuration"
+    "middlware": "middleware", "environemnt": "environment", "configration": "configuration",
+    "functon": "function", "paramater": "parameter", "intialize": "initialize",
+    "dependancy": "dependency", "performence": "performance", "optimze": "optimize"
 }
 
 def extract_compact_tuple_json(original, correct):
@@ -47,11 +48,11 @@ def corrupt_mixed_text(text):
     
     # 2. 注入英文术语拼写错别字
     for typo, correct in MIXED_TYPOS_MAP.items():
-        if re.search(r'\b' + correct + r'\b', corrupted, re.IGNORECASE) and random.random() < 0.5:
+        if re.search(r'\b' + correct + r'\b', corrupted, re.IGNORECASE) and random.random() < 0.4:
             corrupted = re.sub(r'\b' + correct + r'\b', typo, corrupted, count=1, flags=re.IGNORECASE)
             break
             
-    # 3. 注入英文冠词/大小写错误 (a/an, Apple/apple)
+    # 3. 注入英文冠词/大小写错误 (a/an, the/a)
     if " an " in corrupted and random.random() < 0.6:
         corrupted = corrupted.replace(" an ", " a ", 1)
     if " the " in corrupted and random.random() < 0.4:
@@ -80,7 +81,7 @@ def extract_markdown_outline_and_title(text):
 def build_dataset_rfc002():
     samples = []
     print("=" * 70)
-    print("🚀 开始流式构建 RFC-002 全领域平衡真实数据集 (20,000+ 条)")
+    print("🚀 开始流式构建 RFC-002 满血版 50,000+ 条全领域真实平衡数据集")
     print("=" * 70)
 
     # --------------------------------------------------------------------------
@@ -92,7 +93,7 @@ def build_dataset_rfc002():
     # 1.1 中文维基百科 (涵盖日常、历史、地理、科学、哲学、艺术、美食)
     try:
         ds_wiki_zh = load_dataset('wikimedia/wikipedia', '20231101.zh', split='train', streaming=True)
-        for row in ds_wiki_zh.take(4500):
+        for row in ds_wiki_zh.take(12000):
             title = row.get('title', '').strip()
             text = row.get('text', '').strip()
             if len(text) > 150 and not text.startswith("#REDIRECT"):
@@ -103,7 +104,7 @@ def build_dataset_rfc002():
     # 1.2 真实人类中文日常随笔与办公长文 (BelleGroup)
     try:
         ds_belle = load_dataset('BelleGroup/train_1M_CN', split='train', streaming=True)
-        for row in ds_belle.take(3500):
+        for row in ds_belle.take(10000):
             inst = row.get('instruction', '').strip()
             out = row.get('output', '').strip()
             full_text = f"# {inst[:40]}\n\n{out}"
@@ -115,7 +116,7 @@ def build_dataset_rfc002():
     # 1.3 英文多领域教科书与技术指南 (SmolLM Cosmopedia)
     try:
         ds_smol = load_dataset('HuggingFaceTB/smollm-corpus', 'cosmopedia-v2', split='train', streaming=True)
-        for row in ds_smol.take(4000):
+        for row in ds_smol.take(10000):
             text = row.get('text', '').strip()
             if len(text) > 150:
                 real_articles.append({"title": "Technical & Educational Guide", "text": text, "lang": "en", "domain": "技术与教学"})
@@ -128,18 +129,22 @@ def build_dataset_rfc002():
     # 2. 构建任务 1: <|task_gec_mixed|> 中英文混排专项纠错 (25%)
     # --------------------------------------------------------------------------
     print("🔥 [2/5] 构建中英文混排专项纠错 (<|task_gec_mixed|>) 与 GEC 负样本...")
-    mixed_sentences = [
-        ("今天学习了 this is an apple，并调用了 Tauri 的 invoke 方法。", "今天学习了 this is an apple，并调用了 Tauri 的 invoke 方法。"),
-        ("我们在 Linux 和 macOS 上测试了 React 18 的 Concurrent 模式性能。", "我们在 Linux 和 macOS 上测试了 React 18 的 Concurrent 模式性能。"),
-        ("使用 TypeScript 开发大型前端工程可以显著减少 Runtime 阶段的 bug。", "使用 TypeScript 开发大型前端工程可以显著减少 Runtime 阶段的 bug。"),
-        ("建议在生产环境中将 Docker 容器的 memory 限制为 4GB 以上。", "建议在生产环境中将 Docker 容器的 memory 限制为 4GB 以上。"),
-        ("请查收附件中的 Q3 Sprint 工作周报与 API 接口变更文档。", "请查收附件中的 Q3 Sprint 工作周报与 API 接口变更文档。"),
-        ("在 Git 协作中，推荐通过 Pull Request 进行 Code Review 代码审查。", "在 Git 协作中，推荐通过 Pull Request 进行 Code Review 代码审查。"),
-        ("周五下午举办了技术交流分享会，探讨了 Rust 异步生态与 Tokio 原理。", "周五下午举办了技术交流分享会，探讨了 Rust 异步生态与 Tokio 原理。"),
-        ("推荐使用 Vite 构建现代 Web 应用，冷启动速度提升了近 10 倍。", "推荐使用 Vite 构建现代 Web 应用，冷启动速度提升了近 10 倍。")
-    ] * 600
+    mixed_base_sentences = [
+        "今天学习了 this is an apple，并调用了 Tauri 的 invoke 方法。",
+        "我们在 Linux 和 macOS 上测试了 React 18 的 Concurrent 模式性能。",
+        "使用 TypeScript 开发大型前端工程可以显著减少 Runtime 阶段的 bug。",
+        "建议在生产环境中将 Docker 容器的 memory 限制为 4GB 以上。",
+        "请查收附件中的 Q3 Sprint 工作周报与 API 接口变更文档。",
+        "在 Git 协作中，推荐通过 Pull Request 进行 Code Review 代码审查。",
+        "周五下午举办了技术交流分享会，探讨了 Rust 异步生态与 Tokio 原理。",
+        "推荐使用 Vite 构建现代 Web 应用，冷启动速度提升了近 10 倍。",
+        "系统通过 Redis 缓存用户 Session 数据，有效降低了 PostgreSQL 数据库的压力。",
+        "请在 Nginx 配置文件中开启 Gzip 压缩以优化静态资源加载速度。",
+        "前端通过 WebSocket 与后端保持长连接，实现消息的实时推流。",
+        "微服务网关基于 Spring Cloud Gateway 实现统一的鉴权与限流。"
+    ] * 1000
 
-    for clean_orig, clean_std in mixed_sentences:
+    for clean_std in mixed_base_sentences:
         clean_std_pangu = pangu.spacing_text(clean_std)
         corrupted = corrupt_mixed_text(clean_std_pangu)
         if corrupted:
@@ -162,7 +167,7 @@ def build_dataset_rfc002():
     # 中文 CSC 语法纠错库
     try:
         ds_csc = load_dataset('shibing624/CSC', split='train', streaming=True)
-        for row in ds_csc.take(3000):
+        for row in ds_csc.take(7000):
             orig, corr = row['original_text'], row['correct_text']
             if orig == corr:
                 samples.append({"messages": [{"role": "user", "content": f"<|task_gec_zh|>{orig}"}, {"role": "assistant", "content": "[]"}]})
@@ -173,17 +178,14 @@ def build_dataset_rfc002():
         print(f"⚠️ CSC 数据集拉取提示: {e}")
 
     # --------------------------------------------------------------------------
-    # 3. 构建任务 2: <|task_distill|> 80~150字文档语义提炼与滚动 Refine (15%)
+    # 3. 构建任务 2: <|task_distill|> 80~150字文档语义提炼与滚动 Refine (12%)
     # --------------------------------------------------------------------------
     print("📝 [3/5] 构建文档语义提炼与滚动 Refine 样本 (<|task_distill|>)...")
-    for article in real_articles[:3000]:
+    for article in real_articles[:6500]:
         title, outline = extract_markdown_outline_and_title(article['text'])
         text_content = article['text'][:800].replace("\n\n", "\n")
         
-        # 构造提炼提示词
         distill_prompt = f"<|task_distill|>\n【文档标题】\n{title}\n\n【结构大纲】\n{outline}\n\n【正文核心片段】\n{text_content}"
-        
-        # 构造结构化概要
         summary_target = f"主题：{title}；领域：{article['domain']}；要点：阐述了{title}的核心原理、结构组成与实际应用；风格：客观规范。"
         
         samples.append({
@@ -208,7 +210,7 @@ def build_dataset_rfc002():
         system_prompt = f"[User Style Profile]\n- Language: Mixed (zh-en)\n- Preferred: Markdown\n- Tone: Clear, concise\n\n[Document Context]\n- Title: {title}\n- Outline: {outline}\n- Topic: {topic_summary}"
         
         # 60% 样本为 PSM 强后缀约束 (中间挖空 10~30 字，后文非空)
-        # 40% 样本为行尾 Ghost Text 补全 (光标在句子末尾)
+        # 40% 样本为行尾 Ghost Text 补全
         is_psm_middle = random.random() < 0.6
         
         doc_len = len(raw)
@@ -239,7 +241,7 @@ def build_dataset_rfc002():
         })
 
     # --------------------------------------------------------------------------
-    # 5. 格式保真与标点排版样本 (5%)
+    # 5. 格式保真与标点排版样本 (3%)
     # --------------------------------------------------------------------------
     print("🛡️ [5/5] 构建标点排版 (<|task_punc|>) 与格式保真样本 (<|task_preserve|>)...")
     preserves = [
@@ -248,7 +250,7 @@ def build_dataset_rfc002():
         "---\ntitle: Doc\nauthor: Me\n---",
         "| 参数 | 类型 | 说明 |\n|---|---|---|\n| id | string | 唯一标识 |",
         "```rust\nfn main() {\n    println!(\"Hello, world!\");\n}\n```"
-    ] * 100
+    ] * 200
     for p in preserves:
         samples.append({"messages": [{"role": "user", "content": f"<|task_preserve|>{p}"}, {"role": "assistant", "content": "[]"}]})
 
@@ -268,7 +270,7 @@ def build_dataset_rfc002():
         for s in val_samples:
             f.write(json.dumps(s, ensure_ascii=False) + "\n")
             
-    print(f"\n🎉 RFC-002 终极全领域真实平衡数据集构建完成！总计: {len(samples)} 条")
+    print(f"\n🎉 RFC-002 满血版全领域真实平衡数据集构建完成！总计: {len(samples)} 条")
     print(f"├── 训练集 (data/train.jsonl): {len(train_samples)} 条")
     print(f"└── 验证集 (data/val.jsonl):   {len(val_samples)} 条")
 

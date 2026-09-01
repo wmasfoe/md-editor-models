@@ -93,8 +93,8 @@ else
       --batch_size 16 \
       --gradient_accumulation_steps 1 \
       --learning_rate 2e-4 \
-      --lora_r 16 \
-      --lora_alpha 32 \
+      --lora_r 32 \
+      --lora_alpha 64 \
       --merge_and_save \
       --merged_output_dir "$MERGED_DIR"
 
