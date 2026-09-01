@@ -11,6 +11,15 @@ VERSION=${1:-"v1.0.0"}
 BASE_MODEL=${2:-"Qwen/Qwen2.5-0.5B-Instruct"}
 REPO="wmasfoe/md-editor-models"
 
+# 自动检测 Python 执行器（优先使用 uv 虚拟环境）
+if command -v uv &> /dev/null && [ -d ".venv" ]; then
+    PY_CMD="uv run python"
+elif [ -f ".venv/bin/python" ]; then
+    PY_CMD=".venv/bin/python"
+else
+    PY_CMD="python3"
+fi
+
 OUTPUT_DIR="output"
 LORA_DIR="${OUTPUT_DIR}/qwen-editor-lora"
 MERGED_DIR="${OUTPUT_DIR}/qwen-editor-merged"
@@ -31,6 +40,7 @@ echo "======================================================================"
 echo "🚀 开始执行 RFC-002 端侧小模型一键构建与发布流水线"
 echo "🔹 版本标签 (Version):  $VERSION"
 echo "🔹 目标基座 (Model):    $BASE_MODEL"
+echo "🔹 Python 执行器:       $PY_CMD"
 echo "🔹 最终 GGUF 文件:      $FINAL_GGUF"
 echo "======================================================================"
 
@@ -60,10 +70,10 @@ echo -e "\n🔥 [2/5] 开始执行 SFT 多任务微调并自动合并权重..."
 
 if [ ! -f "data/train.jsonl" ]; then
     echo "📊 正在自动构建 RFC-002 数据集..."
-    python scripts/build_dataset.py
+    $PY_CMD scripts/build_dataset.py
 fi
 
-python train_sft.py \
+$PY_CMD train_sft.py \
   --model_name_or_path "$BASE_MODEL" \
   --train_file "data/train.jsonl" \
   --val_file "data/val.jsonl" \
@@ -84,7 +94,7 @@ echo "✅ SFT 训练与模型合并完成: $MERGED_DIR"
 # ------------------------------------------------------------------------------
 echo -e "\n⚡ [3/5] 正在转换为 GGUF 并执行 Q4_K_M 端侧极致量化..."
 
-python3 llama.cpp/convert_hf_to_gguf.py "$MERGED_DIR" --outfile "$F16_GGUF" --outtype f16
+$PY_CMD llama.cpp/convert_hf_to_gguf.py "$MERGED_DIR" --outfile "$F16_GGUF" --outtype f16
 "$QUANTIZE_BIN" "$F16_GGUF" "$FINAL_GGUF" Q4_K_M
 rm -f "$F16_GGUF"
 
