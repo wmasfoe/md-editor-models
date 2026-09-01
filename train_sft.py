@@ -41,7 +41,7 @@ def parse_args():
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4, help="Gradient accumulation steps")
     parser.add_argument("--learning_rate", type=float, default=2e-4, help="Initial learning rate")
     parser.add_argument("--max_seq_length", type=int, default=1024, help="Maximum sequence length")
-    parser.add_argument("--warmup_ratio", type=float, default=0.05, help="Warmup steps ratio")
+    parser.add_argument("--warmup_steps", type=int, default=20, help="Warmup steps")
     parser.add_argument("--logging_steps", type=int, default=10, help="Log metrics every N steps")
     parser.add_argument("--save_steps", type=int, default=100, help="Save checkpoint every N steps")
     
@@ -107,11 +107,13 @@ def main():
             bnb_4bit_use_double_quant=True
         )
 
+    model_dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else (torch.float16 if torch.cuda.is_available() else torch.float32)
+
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name_or_path,
         quantization_config=bnb_config,
         device_map="auto" if torch.cuda.is_available() else None,
-        torch_dtype=torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else torch.float32,
+        torch_dtype=model_dtype,
         trust_remote_code=True
     )
 
@@ -129,7 +131,7 @@ def main():
         bias="none"
     )
 
-    # 6. 配置 SFTTrainer 训练参数
+    # 6. 配置 SFTTrainer 训练参数 (兼容最新 TRL SFTConfig 规范)
     sft_config = SFTConfig(
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
@@ -137,16 +139,15 @@ def main():
         per_device_eval_batch_size=args.batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
-        warmup_ratio=args.warmup_ratio,
+        warmup_steps=args.warmup_steps,
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
-        save_total_limit=3,
-        evaluation_strategy="steps" if "validation" in dataset else "no",
+        save_total_limit=2,
+        eval_strategy="steps" if "validation" in dataset else "no",
         eval_steps=args.save_steps if "validation" in dataset else None,
         bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
         fp16=torch.cuda.is_available() and not torch.cuda.is_bf16_supported(),
-        max_seq_length=args.max_seq_length,
-        dataset_text_field=None,
+        max_length=args.max_seq_length,
         report_to="none"
     )
 
