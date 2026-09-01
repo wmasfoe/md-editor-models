@@ -11,7 +11,7 @@ VERSION=${1:-"v1.0.0"}
 BASE_MODEL=${2:-"Qwen/Qwen2.5-0.5B-Instruct"}
 REPO="wmasfoe/md-editor-models"
 
-# 自动检测 Python 执行器（优先使用 uv 虚拟环境）
+# 自动检测 Python 执行器
 if command -v uv &> /dev/null && [ -d ".venv" ]; then
     PY_CMD="uv run python"
 elif [ -f ".venv/bin/python" ]; then
@@ -49,6 +49,8 @@ echo "======================================================================"
 # ------------------------------------------------------------------------------
 echo -e "\n📦 [1/5] 检查系统环境与量化工具..."
 
+pip install -q sentencepiece gguf protobuf
+
 if [ ! -f "llama.cpp/build/bin/llama-quantize" ] && [ ! -f "llama.cpp/llama-quantize" ]; then
     echo "⚙️ 正在自动拉取并轻量编译 llama.cpp 量化工具..."
     if [ ! -d "llama.cpp" ]; then
@@ -64,37 +66,41 @@ if [ ! -f "$QUANTIZE_BIN" ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 步骤 2: SFT 训练与 LoRA 权重合并
+# 步骤 2: SFT 训练与 LoRA 权重合并 (若已合并则跳过训练)
 # ------------------------------------------------------------------------------
-echo -e "\n🔥 [2/5] 开始执行 SFT 多任务微调并自动合并权重..."
+echo -e "\n🔥 [2/5] 检查 SFT 微调模型..."
 
-if [ ! -f "data/train.jsonl" ]; then
-    echo "📊 正在自动构建 RFC-002 数据集..."
-    $PY_CMD scripts/build_dataset.py
+if [ -d "$MERGED_DIR" ] && [ -f "$MERGED_DIR/model.safetensors" ]; then
+    echo "✨ 检测到已训练合并好的模型 ($MERGED_DIR)，直接进入 GGUF 量化阶段！"
+else
+    if [ ! -f "data/train.jsonl" ]; then
+        echo "📊 正在自动构建 RFC-002 数据集..."
+        $PY_CMD scripts/build_dataset.py
+    fi
+
+    $PY_CMD train_sft.py \
+      --model_name_or_path "$BASE_MODEL" \
+      --train_file "data/train.jsonl" \
+      --val_file "data/val.jsonl" \
+      --output_dir "$LORA_DIR" \
+      --num_train_epochs 3 \
+      --batch_size 16 \
+      --gradient_accumulation_steps 1 \
+      --learning_rate 2e-4 \
+      --lora_r 16 \
+      --lora_alpha 32 \
+      --merge_and_save \
+      --merged_output_dir "$MERGED_DIR"
+
+    echo "✅ SFT 训练与模型合并完成: $MERGED_DIR"
 fi
-
-$PY_CMD train_sft.py \
-  --model_name_or_path "$BASE_MODEL" \
-  --train_file "data/train.jsonl" \
-  --val_file "data/val.jsonl" \
-  --output_dir "$LORA_DIR" \
-  --num_train_epochs 3 \
-  --batch_size 4 \
-  --gradient_accumulation_steps 4 \
-  --learning_rate 2e-4 \
-  --lora_r 16 \
-  --lora_alpha 32 \
-  --merge_and_save \
-  --merged_output_dir "$MERGED_DIR"
-
-echo "✅ SFT 训练与模型合并完成: $MERGED_DIR"
 
 # ------------------------------------------------------------------------------
 # 步骤 3: 转换为 GGUF 并进行 Q4_K_M 量化
 # ------------------------------------------------------------------------------
 echo -e "\n⚡ [3/5] 正在转换为 GGUF 并执行 Q4_K_M 端侧极致量化..."
 
-$PY_CMD llama.cpp/convert_hf_to_gguf.py "$MERGED_DIR" --outfile "$F16_GGUF" --outtype f16
+python3 llama.cpp/convert_hf_to_gguf.py "$MERGED_DIR" --outfile "$F16_GGUF" --outtype f16
 "$QUANTIZE_BIN" "$F16_GGUF" "$FINAL_GGUF" Q4_K_M
 rm -f "$F16_GGUF"
 
@@ -144,7 +150,7 @@ EOF
 echo "✅ Manifest 已生成: $MANIFEST_FILE"
 
 # ------------------------------------------------------------------------------
-# 步骤 5: 发布到 GitHub Releases (有 Token 时自动发布，无 Token 时提示保留本地)
+# 步骤 5: 发布到 GitHub Releases
 # ------------------------------------------------------------------------------
 echo -e "\n🚀 [5/5] 发布检查..."
 
