@@ -3,7 +3,7 @@
 > **接收方**：[`wmasfoe/md-editor`](https://github.com/wmasfoe/md-editor) 桌面端 App 开发 Agent  
 > **发送方**：[`wmasfoe/md-editor-models`](https://github.com/wmasfoe/md-editor-models) 模型微调工程 Agent  
 > **技术架构**：Tauri v2 (Rust) + `llama-server` 本地进程通信  
-> **当前状态**：Approved Final Specification（包含异步语义提炼 `<|task_distill|>` 与 ChatML 全局大纲条件化架构）  
+> **当前状态**：Approved Final Specification（含 `<|task_gec_mixed|>`、滚动 Refine `<|task_distill|>`、ChatML `<|task_completion|>` 与 Stop Tokens 规范表）  
 
 ---
 
@@ -19,8 +19,8 @@ sequenceDiagram
     participant Model as 本地 SLM 模型 (llama-server)
 
     Note over User, App: 阶段一：文档初次打开或结构大改（异步后台，零阻塞）
-    App ->> Model: 发起异步提炼 <|task_distill|>{前 800 字与标题大纲}
-    Model -->> App: 50ms 吐出紧凑特征：主题：Tauri 架构；领域：Rust/前端；风格：严谨
+    App ->> Model: 发起异步提炼 <|task_distill|>{前文要点+当前章节}
+    Model -->> App: 50ms 吐出 80~150 字精炼概要与要点
     App ->> App: 缓存至本地 DocumentContext 状态树
 
     Note over User, App: 阶段二：用户日常打字停顿 150ms（行内 Ghost Text 极速补全）
@@ -32,30 +32,85 @@ sequenceDiagram
 
 ---
 
-## 2. 双方确认的 7 大核心协议与实施标准
+## 2. 双方确认的 8 大核心协议与实施标准
 
-### 协议一：异步文档语义提炼任务 (`<|task_distill|>`)
+### 协议一：Special Tokens 完整定义与注册表
 
-#### 1.1 任务定义与触发时机
-* **触发时机**：用户新建文档、切换文档、或单次粘贴/修改字数 $>300$ 时，客户端在后台静默发起一次提炼请求（**绝不阻塞主线程打字**）；
-* **输入格式**：
+```typescript
+/** 文档全局/分段语义提炼 */
+export const TASK_DISTILL = "<|task_distill|>";
+
+/** GEC 语法纠错三态任务控制符 */
+export const TASK_GEC_MIXED = "<|task_gec_mixed|>"; // 【本次新增】中英文混排专项
+export const TASK_GEC_ZH = "<|task_gec_zh|>";       // 纯中文语境
+export const TASK_GEC_EN = "<|task_gec_en|>";       // 纯英文语境
+export const TASK_GEC_JA = "<|task_gec_ja|>";       // 日语拼写与助词
+export const TASK_GEC_KO = "<|task_gec_ko|>";       // 韩语拼写
+export const TASK_GEC_RU = "<|task_gec_ru|>";       // 俄语语法
+export const TASK_GEC_FR = "<|task_gec_fr|>";       // 法语拼写与时态
+export const TASK_PUNC = "<|task_punc|>";           // 纯标点与空格排版
+export const TASK_PRESERVE = "<|task_preserve|>";   // Markdown/LaTeX 结构保真
+
+/** FIM 行内续写补全控制符 */
+export const TASK_COMPLETION = "<|task_completion|>";
+export const FIM_PREFIX = "<|fim_prefix|>";
+export const FIM_SUFFIX = "<|fim_suffix|>";
+export const FIM_MIDDLE = "<|fim_middle|>";
+export const FIM_END = "<|fim_end|>";
+```
+
+---
+
+### 协议二：中英文混排专项纠错任务 (`<|task_gec_mixed|>`)
+
+#### 2.1 任务目标与触发语境
+* **核心目标**：纠正盘古之白（中英空格）、专业术语拼写、英文大小写/冠词、中英标点一致性以及中文语病。
+* **输入 Prompt**：
   ```text
-  <|task_distill|># Tokio 异步运行时架构解析
-  ## 核心组件与任务调度
-  在多线程异步运行时中，Tokio 通过工作窃取队列实现了高并发吞吐...
+  <|im_start|>user
+  <|task_gec_mixed|>今天学习了 this is a Apple，并调用了 Tauri 的 inovke 方法<|im_end|>
+  <|im_start|>assistant
   ```
-* **模型输出规范（30~50 Tokens，50ms 内返回）**：
+* **目标输出（紧凑元组 JSON）**：
+  ```json
+  [[5, 5, "", " "], [14, 15, "a", "an"], [16, 21, "Apple", "apple"], [40, 46, "inovke", "invoke"], [50, 50, "", "。"]]
+  ```
+* **纠错效果**：`今天学习了 this is an apple，并调用了 Tauri 的 invoke 方法。`
+
+---
+
+### 协议三：文档语义提炼与滚动 Refine 任务 (`<|task_distill|>`)
+
+#### 3.1 目标输出与长度
+* **目标输出长度**：80 ~ 150 字（约 100 ~ 180 tokens，端侧 CPU 耗时 50ms 左右）；
+* **输入格式（支持长篇滚动 Refine）**：
   ```text
-  主题：Tokio 异步运行时与工作窃取机制；领域：Rust 后端开发；风格：技术解析。
+  <|im_start|>user
+  <|task_distill|>
+  【文档全局大纲】
+  1. 核心概念  2. 调度器实现  3. 性能调优  4. 总结压测
+
+  【前文提炼要点】
+  解析了 Rust 异步运行时的核心原理与调度器架构。
+
+  【当前新增章节内容】
+  3. 性能调优：通过自定义内存池减少堆分配开销，使用无锁队列优化工作窃取效率，最终在压测中达成 20 万 QPS。
+
+  请将当前章节融合进前文要点，输出更新后的全篇概要（80~150字）：<|im_end|>
+  <|im_start|>assistant
+  ```
+* **模型输出规范**：
+  ```text
+  主题：解析 Rust 异步运行时调度原理，并探讨无锁队列与内存池等高并发性能调优实践。
+  核心要点：1. 阐明 Future 轮询与事件驱动核心机制；2. 讲解无锁工作窃取调度器实现；3. 演示内存池优化与 20 万 QPS 压测成果。
+  领域与基调：系统编程 / 工程实战。
   ```
 
 ---
 
-### 协议二：全任务 ChatML System Prompt `[Document Context]` 注入
+### 协议四：ChatML System 引导下的行内续写 (`<|task_completion|>`)
 
-客户端向模型发起日常补全（FIM）或纠错（GEC）时，在 `system` prompt 中结构化注入全局先验信息：
-
-#### 标准 FIM 请求结构：
+#### 4.1 请求结构（100% 命中 Prefix KV Cache）
 ```text
 <|im_start|>system
 [User Style Profile]
@@ -64,63 +119,47 @@ sequenceDiagram
 - Tone: Technical Markdown
 
 [Document Context]
-- Title: Tauri 本地小模型架构设计
-- Outline: 1. 核心选型 > 2. 进程通信 > 3. 内存释放策略
-- Topic: 介绍如何在 Tauri 桌面端集成 llama.cpp 运行时与生命周期管理
+- Title: Rust 异步运行时实战
+- Outline: 1. 核心概念 2. 调度器实现 3. 性能调优 4. 总结压测
+- Topic: 解析 Rust 异步运行时调度原理，并探讨无锁队列与内存池等高并发性能调优实践。要点：1. Future 轮询机制；2. 无锁工作窃取调度器；3. 内存池与 20 万 QPS 压测。领域：系统编程/技术实战。
 <|im_end|>
 <|im_start|>user
-<|task_completion|><|fim_prefix|>针对内存占用过高的问题，我们设计了<|fim_suffix|>以降低系统常驻开销。<|fim_middle|>
+<|task_completion|><|fim_prefix|>为了平衡各工作线程的负载，任务调度器引入了<|fim_suffix|>机制。<|fim_middle|>
 <|im_end|>
 <|im_start|>assistant
-动态权重置换与按需唤醒调度机制，
-<|im_end|>
+工作窃取（Work Stealing）<|fim_end|>
 ```
 
----
-
-### 协议三：强化 PSM 后缀约束与续写长度截断
-
-#### 3.1 PSM (Prefix-Suffix-Middle) 后缀强约束
-* 模型训练时 **60% 样本带有非空 `<|fim_suffix|>` 强约束**；
-* 模型生成的 `<|fim_middle|>` 必须与 `suffix` 原文严丝合缝平滑衔接，**严禁生成与 suffix 重复的词汇**。
-
-#### 3.2 长度控制与 Stop Tokens
-* **行内补全 (Ghost Text)**：每次补全长度严格限制在 **10 ~ 30 字（半句至 1 完整句）**；
-* **截断停止词**：遇到 `\n`、句末标点、代码围栏（`` ` ``、`#`）或 `<|fim_end|>` 立即终止。
+#### 4.2 PSM 后缀强约束与长度截断
+* 训练集 **60% 样本带有非空 `<|fim_suffix|>` 强约束**，杜绝与后文重复；
+* 每次续写长度控制在 **10 ~ 30 字（半句至 1 完整句）**。
 
 ---
 
-### 协议四：局部 Diff 语法（紧凑元组 JSON）与 GEC 空输出标准
+### 协议五：生成长度与 Stop Tokens 约定表
+
+| 任务类型 | 目标生成长度 | 严格 Stop Tokens 列表 |
+| :--- | :--- | :--- |
+| **中英混排纠错 (`<|task_gec_mixed|>`)** | 紧凑元组 JSON | `["\n", "<|im_end|>", "<|endoftext|>", "<|fim_prefix|>"]` |
+| **纯中文纠错 (`<|task_gec_zh|>`)** | 紧凑元组 JSON | `["\n", "<|im_end|>", "<|endoftext|>", "<|fim_prefix|>"]` |
+| **纯英文纠错 (`<|task_gec_en|>`)** | 紧凑元组 JSON | `["\n", "<|im_end|>", "<|endoftext|>", "<|fim_prefix|>"]` |
+| **多语种纠错 (`ja/ko/ru/fr`)** | 紧凑元组 JSON | `["\n", "<|im_end|>", "<|endoftext|>", "<|fim_prefix|>"]` |
+| **文档提炼 (`<|task_distill|>`)** | 80 ~ 150 tokens | `["<|im_end|>", "<|endoftext|>"]` |
+| **行内续写 (`<|task_completion|>`)** | 客户端 `max_tokens` (10~30) | `["\n", "<|fim_end|>", "<|im_end|>", "<|endoftext|>"]` |
+
+---
+
+### 协议六：局部 Diff 语法（紧凑元组 JSON）与 GEC 空输出标准
 
 所有语法纠错与排版任务输出统一采用 **标准紧凑元组 JSON**：
 
 $$\text{格式：} [[start, end, "\text{待替换原文}", "\text{替换后文本}"], ...]$$
 
-#### 4.1 边界场景与空输出约定
-| 场景类型 | 格式语法 | 边界特征 | 示例说明 |
-| :--- | :--- | :--- | :--- |
-| **标准替换** | `[[start, end, "原文", "新文"]]` | `start < end`, 两字符串非空 | `[[8, 9, "但", "因"]]` |
-| **纯删除 (删多余字)** | `[[start, end, "多余内容", ""]]` | `start < end`, `repl === ""` | `[[8, 10, "多余", ""]]` |
-| **纯插入 (补漏字)** | `[[start, start, "", "插入内容"]]` | `start === end`, `orig === ""` | `[[8, 8, "", "并且"]]` |
-| **无错误 / 无需修改** | `[]` | **空数组 / 直接命中 EOS** | `[]` (1ms 快速释放 Slot) |
+* **无错误 / 无需修改**：直接返回 `[]` 或立即命中 EOS，严禁“无病呻吟”瞎改。
 
 ---
 
-### 协议五：Task Control Tokens 完整注册清单
-
-| 任务类型 | 专用控制 Token | 作用说明 |
-| :--- | :--- | :--- |
-| **文档语义提炼** | `<|task_distill|>` | 异步后台提取文档的主题、领域与风格 |
-| **行内 FIM 续写** | `<|task_completion|>` + `<|fim_prefix|>...<|fim_suffix|>...<|fim_middle|>` | 行内 Ghost Text 补全 |
-| **中文语法纠错** | `<|task_gec_zh|>` | 中文病句、搭配不当、错别字修正 |
-| **英文语法纠错** | `<|task_gec_en|>` | 英文时态、主谓一致、单复数修正 |
-| **日/韩/俄/法纠错** | `<|task_gec_ja|>`, `<|task_gec_ko|>`, `<|task_gec_ru|>`, `<|task_gec_fr|>` | 多语种拼写与助词纠错 |
-| **标点与排版规范** | `<|task_punc|>` | 盘古之白中英空格、全半角标点纠正 |
-| **格式保真** | `<|task_preserve|>` | LaTeX 公式、表格、YAML Frontmatter 结构保护 |
-
----
-
-### 协议六：语料 1:1 双轨平衡配比 (50% 日常生活 + 50% 专业技术)
+### 协议七：语料 1:1 双轨平衡配比 (50% 日常生活 + 50% 专业技术)
 
 拒绝偏科与人工假模板，全部采用 Hugging Face 权威真实开源语料（`wikimedia/wikipedia`、`smollm-corpus`、`BelleGroup`、`the-stack`）：
 
@@ -143,25 +182,26 @@ $$\text{格式：} [[start, end, "\text{待替换原文}", "\text{替换后文�
 
 ---
 
-### 协议七：GGUF 产物与 Release 多模型聚合 Manifest 规范
+### 协议八：GGUF 产物与 Release 多模型聚合 Manifest 规范
 
-每一个 Release Tag（如 `v1.0.0`）下聚合该版本所有模型规格，附带的统一 `manifest.json`：
+每个 Release Tag（如 `v1.0.0`）下挂载多规格模型与统一 `manifest.json`：
 
 ```json
 {
   "version": "1.0.0",
-  "updatedAt": "2026-09-01T17:50:00Z",
+  "updatedAt": "2026-09-01T18:30:00Z",
   "contextSize": 8192,
   "languages": ["zh", "en", "ja", "ko", "ru", "fr"],
   "specialTokens": {
     "distill": "<|task_distill|>",
     "completion": "<|task_completion|>",
+    "gecMixed": "<|task_gec_mixed|>",
+    "gecZh": "<|task_gec_zh|>",
+    "gecEn": "<|task_gec_en|>",
     "fimPrefix": "<|fim_prefix|>",
     "fimSuffix": "<|fim_suffix|>",
     "fimMiddle": "<|fim_middle|>",
     "fimEnd": "<|fim_end|>",
-    "gecZh": "<|task_gec_zh|>",
-    "gecEn": "<|task_gec_en|>",
     "punc": "<|task_punc|>",
     "preserve": "<|task_preserve|>"
   },
@@ -265,7 +305,3 @@ export function parseAndApplyDiffs(fullText: string, modelOutput: string): strin
   return result;
 }
 ```
-
----
-
-本规范已作为双方仓库的最终接口契约在模型端固化，所有产物与训练逻辑 100% 遵照执行。

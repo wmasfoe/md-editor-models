@@ -10,8 +10,11 @@ from transformers import (
 from peft import LoraConfig, get_peft_model, TaskType, PeftModel
 from trl import SFTTrainer, SFTConfig
 
-# RFC-002 专属控制符清单（作为 Special Tokens 固化进词表）
+# RFC-002 专属全集控制符（作为 Special Tokens 固化进词表）
 SPECIAL_TOKENS = [
+    "<|task_distill|>",
+    "<|task_completion|>",
+    "<|task_gec_mixed|>",
     "<|task_gec_zh|>",
     "<|task_gec_en|>",
     "<|task_gec_ja|>",
@@ -41,7 +44,7 @@ def parse_args():
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
     parser.add_argument("--learning_rate", type=float, default=2e-4, help="Initial learning rate")
     parser.add_argument("--max_seq_length", type=int, default=1024, help="Maximum sequence length")
-    parser.add_argument("--warmup_steps", type=int, default=20, help="Warmup steps")
+    parser.add_argument("--warmup_steps", type=int, default=30, help="Warmup steps")
     parser.add_argument("--logging_steps", type=int, default=20, help="Log metrics every N steps")
     
     # LoRA / QLoRA 配置
@@ -94,7 +97,7 @@ def main():
     # 注入特殊控制符（确保不被拆分为普通 subwords）
     num_added = tokenizer.add_special_tokens({"additional_special_tokens": SPECIAL_TOKENS})
     if num_added > 0:
-        print(f"✨ Registered {num_added} RFC-002 special control tokens in tokenizer vocabulary!")
+        print(f"✨ Registered {num_added} RFC-002 special control tokens in tokenizer vocabulary: {SPECIAL_TOKENS}")
 
     # 4. 加载基座模型（支持 QLoRA 4-bit 量化加载，L4 显存足够直接 FP16/BF16）
     bnb_config = None
@@ -131,7 +134,7 @@ def main():
         bias="none"
     )
 
-    # 6. 配置 SFTTrainer 训练参数 (L4 高效配置：按 Epoch 评测与保存，消除 20 分钟空转评测)
+    # 6. 配置 SFTTrainer 训练参数 (按 Epoch 评测与保存，消除空转开销)
     sft_config = SFTConfig(
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,

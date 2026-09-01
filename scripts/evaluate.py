@@ -1,12 +1,11 @@
 import json
 import argparse
-import re
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Evaluate RFC-002 model output adherence (Tuple JSON Diff & FIM)")
+    parser = argparse.ArgumentParser(description="Evaluate RFC-002 model output adherence (Tuple JSON Diff & FIM & Distill)")
     parser.add_argument("--model_path", type=str, default="Qwen/Qwen2.5-0.5B-Instruct", help="Path to base model or merged model")
     parser.add_argument("--lora_path", type=str, default=None, help="Optional path to LoRA adapter")
     parser.add_argument("--val_file", type=str, default="data/val.jsonl", help="Validation dataset path")
@@ -48,14 +47,11 @@ def main():
     
     for idx, sample in enumerate(val_samples[:args.num_eval_samples]):
         messages = sample["messages"]
-        user_content = messages[0]["content"] if messages[0]["role"] == "user" else messages[1]["content"]
         ground_truth = messages[-1]["content"]
         
-        conversation = [
-            {"role": "user", "content": user_content}
-        ]
-        
-        prompt_text = tokenizer.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True)
+        # 截取 Prompt (除最后一条 assistant 消息之外的输入)
+        input_messages = messages[:-1]
+        prompt_text = tokenizer.apply_chat_template(input_messages, tokenize=False, add_generation_prompt=True)
         inputs = tokenizer(prompt_text, return_tensors="pt").to(model.device)
         
         with torch.no_grad():
@@ -70,15 +66,20 @@ def main():
         generated_ids = outputs[0][inputs.input_ids.shape[1]:]
         response_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
         
-        print(f"[{idx+1}/{args.num_eval_samples}] 输入 Prompt: {user_content[:60]}...")
+        user_msg = next((m["content"] for m in input_messages if m["role"] == "user"), "")
+        print(f"[{idx+1}/{args.num_eval_samples}] 输入 Prompt: {user_msg[:60]}...")
         print(f"  👉 真实期望: {ground_truth}")
         print(f"  🤖 模型输出: {response_text}")
         
         # 判断任务类型并校验
-        if "<|fim_prefix|>" in user_content:
+        if "<|fim_prefix|>" in user_msg:
             # FIM 任务
             valid_format_count += 1
             print("  ✅ FIM 补全输出正常")
+        elif "<|task_distill|>" in user_msg:
+            # 文档提炼任务
+            valid_format_count += 1
+            print("  ✅ 文档提炼输出正常")
         else:
             # GEC / Punctuation / Preserve 任务 -> 校验元组 JSON
             try:
