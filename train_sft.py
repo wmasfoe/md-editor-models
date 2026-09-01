@@ -35,15 +35,14 @@ def parse_args():
     parser.add_argument("--val_file", type=str, default="data/val.jsonl", help="Path to validation jsonl file")
     parser.add_argument("--output_dir", type=str, default="output/qwen-0.5b-editor-lora", help="Directory to save LoRA checkpoints")
     
-    # 训练超参数
+    # 训练超参数 (针对 L4 / 现代 GPU 高吞吐优化)
     parser.add_argument("--num_train_epochs", type=int, default=3, help="Total training epochs")
-    parser.add_argument("--batch_size", type=int, default=4, help="Per-device batch size")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=4, help="Gradient accumulation steps")
+    parser.add_argument("--batch_size", type=int, default=16, help="Per-device batch size (16 for L4/T4)")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
     parser.add_argument("--learning_rate", type=float, default=2e-4, help="Initial learning rate")
     parser.add_argument("--max_seq_length", type=int, default=1024, help="Maximum sequence length")
     parser.add_argument("--warmup_steps", type=int, default=20, help="Warmup steps")
-    parser.add_argument("--logging_steps", type=int, default=10, help="Log metrics every N steps")
-    parser.add_argument("--save_steps", type=int, default=100, help="Save checkpoint every N steps")
+    parser.add_argument("--logging_steps", type=int, default=20, help="Log metrics every N steps")
     
     # LoRA / QLoRA 配置
     parser.add_argument("--lora_r", type=int, default=16, help="LoRA rank")
@@ -53,7 +52,7 @@ def parse_args():
     
     # 导出与合并
     parser.add_argument("--merge_and_save", action="store_true", help="Merge LoRA weights into base model after training")
-    parser.add_argument("--merged_output_dir", type=str, default="output/qwen-0.5b-editor-merged", help="Directory to save the merged standalone model")
+    parser.add_argument("--merged_output_dir", type=str, default="output/qwen-editor-merged", help="Directory to save the merged standalone model")
 
     return parser.parse_args()
 
@@ -61,12 +60,13 @@ def main():
     args = parse_args()
     
     print("=" * 60)
-    print(f"🚀 Starting RFC-002 SLM Fine-Tuning Pipeline")
+    print(f"🚀 Starting RFC-002 SLM High-Throughput Fine-Tuning Pipeline")
     print(f"🔹 Base Model:   {args.model_name_or_path}")
     print(f"🔹 Train Dataset: {args.train_file}")
     print(f"🔹 Val Dataset:   {args.val_file}")
+    print(f"🔹 Batch Size:    {args.batch_size} (Grad Accum: {args.gradient_accumulation_steps})")
+    print(f"🔹 BF16 Support:  {torch.cuda.is_available() and torch.cuda.is_bf16_supported()}")
     print(f"🔹 Output Dir:    {args.output_dir}")
-    print(f"🔹 CUDA Available: {torch.cuda.is_available()}")
     print("=" * 60)
 
     # 1. 检查数据文件
@@ -96,7 +96,7 @@ def main():
     if num_added > 0:
         print(f"✨ Registered {num_added} RFC-002 special control tokens in tokenizer vocabulary!")
 
-    # 4. 加载基座模型（支持 QLoRA 4-bit 量化加载）
+    # 4. 加载基座模型（支持 QLoRA 4-bit 量化加载，L4 显存足够直接 FP16/BF16）
     bnb_config = None
     if args.use_qlora:
         print("💡 QLoRA enabled: loading base model in 4-bit NormalFloat precision...")
@@ -131,7 +131,7 @@ def main():
         bias="none"
     )
 
-    # 6. 配置 SFTTrainer 训练参数 (兼容最新 TRL SFTConfig 规范)
+    # 6. 配置 SFTTrainer 训练参数 (L4 高效配置：按 Epoch 评测与保存，消除 20 分钟空转评测)
     sft_config = SFTConfig(
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
@@ -141,10 +141,9 @@ def main():
         learning_rate=args.learning_rate,
         warmup_steps=args.warmup_steps,
         logging_steps=args.logging_steps,
-        save_steps=args.save_steps,
+        save_strategy="epoch",
         save_total_limit=2,
-        eval_strategy="steps" if "validation" in dataset else "no",
-        eval_steps=args.save_steps if "validation" in dataset else None,
+        eval_strategy="epoch" if "validation" in dataset else "no",
         bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
         fp16=torch.cuda.is_available() and not torch.cuda.is_bf16_supported(),
         max_length=args.max_seq_length,
