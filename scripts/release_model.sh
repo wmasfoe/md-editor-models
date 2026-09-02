@@ -22,9 +22,6 @@ else
 fi
 
 OUTPUT_DIR="output"
-LORA_DIR="${OUTPUT_DIR}/qwen-editor-lora"
-MERGED_DIR="${OUTPUT_DIR}/qwen-editor-merged"
-F16_GGUF="${OUTPUT_DIR}/model-f16.gguf"
 
 if [[ "$BASE_MODEL" == *"1.5B"* ]]; then
   MODEL_ID="qwen2.5-1.5b-editor"
@@ -40,6 +37,9 @@ else
   RECOMMENDED="--recommended"
 fi
 
+LORA_DIR="${OUTPUT_DIR}/${MODEL_ID}-lora"
+MERGED_DIR="${OUTPUT_DIR}/${MODEL_ID}-merged"
+F16_GGUF="${OUTPUT_DIR}/${MODEL_ID}-f16.gguf"
 FINAL_GGUF="${OUTPUT_DIR}/${MODEL_ID}-${VERSION}-Q4_K_M.gguf"
 MANIFEST_FILE="${OUTPUT_DIR}/manifest.json"
 
