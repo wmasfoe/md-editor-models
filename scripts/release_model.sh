@@ -1,15 +1,37 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# RFC-002 一键微调、量化与 GitHub Release 多模型聚合发布流水线脚本
-# 用法: ./scripts/release_model.sh [VERSION] [BASE_MODEL]
-# 示例: ./scripts/release_model.sh v1.0.0 Qwen/Qwen2.5-0.5B-Instruct
-#       ./scripts/release_model.sh v1.0.0 Qwen/Qwen2.5-Coder-1.5B-Instruct
+# md-editor-models 一键微调、量化与 GitHub Release 发布流水线
+#
+# 两种用法：
+# 1) 旧版完整 GGUF（单个模型文件，兼容 v1.1.0 时代产物）:
+#    ./scripts/release_model.sh v1.2.0 Qwen/Qwen2.5-0.5B-Instruct
+#
+# 2) v2 分档发布（Base + 任务 Adapter）:
+#    ./scripts/release_model.sh v1.2.0 Qwen/Qwen3-0.6B --tier lite --asset base
+#    ./scripts/release_model.sh v1.2.0 Qwen/Qwen3-0.6B --tier lite --asset adapter --task gec
+#    ./scripts/release_model.sh v1.2.0 Qwen/Qwen3-0.6B --tier lite --asset adapter --task completion
+#
+# 说明：--asset base / adapter 时产物为 "merged 后完整模型" 或 "任务专用 SFT 模型"，
+#       manifest 会按 asset_kind 写入 base / capabilities.<task> 字段。
 # ==============================================================================
 
 set -e
 
 VERSION=${1:-"v1.0.0"}
-BASE_MODEL=${2:-"Qwen/Qwen2.5-0.5B-Instruct"}
+BASE_MODEL=${2:-"Qwen/Qwen3-0.6B"}
+ASSET_KIND="legacy-model"
+TASK=""
+TIER=""
+shift 2 2>/dev/null || true
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --asset) ASSET_KIND="$2"; shift 2;;
+    --task) TASK="$2"; shift 2;;
+    --tier) TIER="$2"; shift 2;;
+    *) echo "❌ 未知参数: $1"; exit 1;;
+  esac
+done
+
 REPO="wmasfoe/md-editor-models"
 
 # 自动检测 Python 执行器
@@ -23,43 +45,87 @@ fi
 
 OUTPUT_DIR="output"
 
-if [[ "$BASE_MODEL" == *"1.5B"* ]]; then
-  MODEL_ID="qwen2.5-1.5b-editor"
-  TIER="standard"
-  DISPLAY_NAME="Qwen 2.5 1.5B (高精度进阶版)"
-  DESCRIPTION="更强复杂长句纠错与代码续写能力，推荐 M 系列 Mac 或高配 PC"
-  RECOMMENDED=""
-  BATCH_SIZE=64
-  GRAD_ACCUM=1
-else
-  MODEL_ID="qwen2.5-0.5b-editor"
-  TIER="lite"
-  DISPLAY_NAME="Qwen 2.5 0.5B (轻量极速版)"
-  DESCRIPTION="首字延迟 <30ms，内存仅占 280MB，适合所有轻薄本与日常流畅写作"
-  RECOMMENDED="--recommended"
-  BATCH_SIZE=64
-  GRAD_ACCUM=1
+# ------------------------------------------------------------------------------
+# 模型档位与元数据推断
+# ------------------------------------------------------------------------------
+MODEL_FAMILY="qwen3"
+if [[ "$BASE_MODEL" == *"Qwen2.5"* ]]; then
+    MODEL_FAMILY="qwen2.5"
 fi
 
-LORA_DIR="${OUTPUT_DIR}/${MODEL_ID}-lora"
-MERGED_DIR="${OUTPUT_DIR}/${MODEL_ID}-merged"
-F16_GGUF="${OUTPUT_DIR}/${MODEL_ID}-f16.gguf"
-FINAL_GGUF="${OUTPUT_DIR}/${MODEL_ID}-${VERSION}-Q4_K_M.gguf"
+if [ -z "$TIER" ]; then
+    if [[ "$BASE_MODEL" == *"1.5B"* ]]; then
+        TIER="standard"
+    else
+        TIER="lite"
+    fi
+fi
+
+if [[ "$BASE_MODEL" == *"1.5B"* ]]; then
+    PARAM_TAG="1.5b"
+elif [[ "$BASE_MODEL" == *"3B"* ]] || [[ "$BASE_MODEL" == *"3.8B"* ]]; then
+    PARAM_TAG="3b"
+else
+    PARAM_TAG="0.6b"
+fi
+
+if [ "$ASSET_KIND" = "legacy-model" ]; then
+    MODEL_ID="${MODEL_FAMILY}-${PARAM_TAG}-editor"
+    DISPLAY_NAME="Qwen ${PARAM_TAG} Editor (自动档)"
+    DESCRIPTION="端侧垂直小模型（多任务统一版）"
+    if [ "$TIER" = "standard" ]; then
+        DISPLAY_NAME="Qwen ${PARAM_TAG} Editor (高精度进阶版)"
+        DESCRIPTION="更强复杂长句纠错与代码续写能力，推荐 M 系列 Mac 或高配 PC"
+        RECOMMENDED=""
+    else
+        RECOMMENDED="--recommended"
+    fi
+elif [ "$ASSET_KIND" = "base" ]; then
+    MODEL_ID="md-editor-writer-${TIER}"
+    DISPLAY_NAME=$( [ "$TIER" = "lite" ] && echo "Lite (0.6B)" || echo "Standard (${PARAM_TAG}B)" )
+    DESCRIPTION=$( [ "$TIER" = "lite" ] && echo "轻量极速版：GEC 修复与 FIM 续写" || echo "高精度进阶版：GEC 修复与 FIM 续写" )
+    RECOMMENDED=""
+    [ "$TIER" = "lite" ] && RECOMMENDED="--recommended"
+else
+    MODEL_ID="md-editor-writer-${TIER}"
+    DISPLAY_NAME=$( [ "$TIER" = "lite" ] && echo "Lite (0.6B)" || echo "Standard (${PARAM_TAG}B)" )
+    DESCRIPTION="任务专用 Adapter（${TASK}）"
+    RECOMMENDED=""
+fi
+
+BATCH_SIZE=64
+GRAD_ACCUM=1
+
+# 旧版完整模型产物名（legacy 仍保留 modelId-version 命名以兼容历史 Release 资产）
+if [ "$ASSET_KIND" = "legacy-model" ]; then
+    LORA_DIR="${OUTPUT_DIR}/${MODEL_ID}-lora"
+    MERGED_DIR="${OUTPUT_DIR}/${MODEL_ID}-merged"
+    F16_GGUF="${OUTPUT_DIR}/${MODEL_ID}-f16.gguf"
+    FINAL_GGUF="${OUTPUT_DIR}/${MODEL_ID}-${VERSION}-Q4_K_M.gguf"
+else
+    BASE_SHORT=$(echo "$BASE_MODEL" | tr '/' '-')
+    LORA_DIR="${OUTPUT_DIR}/lora-${TIER}-${TASK:-base}"
+    MERGED_DIR="${OUTPUT_DIR}/merged-${TIER}-${TASK:-base}"
+    F16_GGUF="${OUTPUT_DIR}/tmp-${TIER}-${TASK:-base}-f16.gguf"
+    FINAL_GGUF="${OUTPUT_DIR}/${TIER}-${TASK:-base}-${MODEL_FAMILY}-${PARAM_TAG}-${VERSION}-Q4_K_M.gguf"
+fi
 MANIFEST_FILE="${OUTPUT_DIR}/manifest.json"
 
 echo "======================================================================"
-echo "🚀 开始执行 RFC-002 多模型矩阵聚合发布流水线"
-echo "🔹 版本标签 (Version):  $VERSION"
-echo "🔹 目标基座 (Model):    $BASE_MODEL ($MODEL_ID - $TIER)"
-echo "🔹 目标 GGUF 文件:      $FINAL_GGUF"
+echo "🚀 md-editor-models 发布流水线"
+echo "🔹 版本 (Version):        $VERSION"
+echo "🔹 基座 (Base):           $BASE_MODEL"
+echo "🔹 资产类型 (Asset):      $ASSET_KIND"
+echo "🔹 任务 (Task):           ${TASK:-（无）}"
+echo "🔹 档位 (Tier):           $TIER"
+echo "🔹 产物 (Output):         $FINAL_GGUF"
 echo "======================================================================"
 
 # ------------------------------------------------------------------------------
-# 步骤 1: 检查前置依赖与编译 llama.cpp
+# 步骤 1: 检查前置依赖与编译 llama.cpp 量化工具
 # ------------------------------------------------------------------------------
 echo -e "\n📦 [1/5] 检查系统环境与量化工具..."
-
-pip install -q sentencepiece gguf protobuf "torchao>=0.16.0"
+pip install -q sentencepiece gguf protobuf "torchao>=0.16.0" 2>/dev/null || true
 
 if [ ! -f "llama.cpp/build/bin/llama-quantize" ] && [ ! -f "llama.cpp/llama-quantize" ]; then
     echo "⚙️ 正在自动拉取并轻量编译 llama.cpp 量化工具..."
@@ -76,7 +142,7 @@ if [ ! -f "$QUANTIZE_BIN" ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 步骤 2: SFT 训练与 LoRA 权重合并 (若已合并则跳过训练)
+# 步骤 2: SFT 训练与 LoRA 权重合并
 # ------------------------------------------------------------------------------
 echo -e "\n🔥 [2/5] 检查 SFT 微调模型..."
 
@@ -84,8 +150,13 @@ if [ -d "$MERGED_DIR" ] && [ -f "$MERGED_DIR/model.safetensors" ]; then
     echo "✨ 检测到已训练合并好的模型 ($MERGED_DIR)，直接进入 GGUF 量化阶段！"
 else
     if [ ! -f "data/train.jsonl" ]; then
-        echo "📊 正在自动构建 RFC-002 数据集..."
+        echo "📊 正在自动构建 RFC-003 数据集..."
         $PY_CMD scripts/build_dataset.py
+    fi
+
+    TASK_ARGS=()
+    if [ "$ASSET_KIND" = "adapter" ] && [ -n "$TASK" ]; then
+        TASK_ARGS+=(--task "$TASK" --adapter_id "${MODEL_ID}-${TASK}")
     fi
 
     $PY_CMD train_sft.py \
@@ -100,7 +171,8 @@ else
       --lora_r 32 \
       --lora_alpha 64 \
       --merge_and_save \
-      --merged_output_dir "$MERGED_DIR"
+      --merged_output_dir "$MERGED_DIR" \
+      "${TASK_ARGS[@]}"
 
     echo "✅ SFT 训练与模型合并完成: $MERGED_DIR"
 fi
@@ -123,11 +195,11 @@ echo "├── 文件大小: $(( GGUF_SIZE / 1024 / 1024 )) MB ($GGUF_SIZE 字�
 echo "└── SHA256:  $GGUF_SHA256"
 
 # ------------------------------------------------------------------------------
-# 步骤 4: 增量合并与生成客户端多模型 Manifest
+# 步骤 4: 更新客户端 Manifest（schema v2）
 # ------------------------------------------------------------------------------
-echo -e "\n📋 [4/5] 增量合并与更新客户端 Manifest.json..."
+echo -e "\n📋 [4/5] 更新客户端 Manifest.json..."
 
-# 尝试从现有 Release 下载已有的 manifest.json 进行合并
+# 尝试从现有 Release 下载已有 manifest.json 进行增量合并
 if command -v gh &> /dev/null && gh release view "$VERSION" --repo "$REPO" &> /dev/null; then
     echo "📥 发现现有 Release $VERSION，正在拉取已有 manifest.json 进行增量合并..."
     gh release download "$VERSION" -p "manifest.json" -O "$MANIFEST_FILE" --repo "$REPO" --clobber || true
@@ -135,22 +207,45 @@ fi
 
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/$(basename "$FINAL_GGUF")"
 
+MANIFEST_ARGS=(
+  --manifest_path "$MANIFEST_FILE"
+  --version "$VERSION"
+  --model_id "$MODEL_ID"
+  --tier "$TIER"
+  --display_name "$DISPLAY_NAME"
+  --description "$DESCRIPTION"
+  --quant "Q4_K_M"
+  --filename "$(basename "$FINAL_GGUF")"
+  --size_bytes "$GGUF_SIZE"
+  --sha256 "$GGUF_SHA256"
+  --download_url "$DOWNLOAD_URL"
+  --asset_kind "$ASSET_KIND"
+)
+
+if [ "$ASSET_KIND" = "adapter" ]; then
+    MANIFEST_ARGS+=(--task "$TASK" --base_model_id "md-editor-writer-${TIER}")
+fi
+[ -n "$RECOMMENDED" ] && MANIFEST_ARGS+=("$RECOMMENDED")
+
+$PY_CMD scripts/update_manifest.py "${MANIFEST_ARGS[@]}"
+
+# Pro 档位占位条目：确保 manifest 始终向客户端表达“Pro 尚未发布”，由远端唯一决定展示状态
 $PY_CMD scripts/update_manifest.py \
   --manifest_path "$MANIFEST_FILE" \
   --version "$VERSION" \
-  --model_id "$MODEL_ID" \
-  --tier "$TIER" \
-  --display_name "$DISPLAY_NAME" \
-  --description "$DESCRIPTION" \
-  --quant "Q4_K_M" \
-  --filename "$(basename "$FINAL_GGUF")" \
-  --size_bytes "$GGUF_SIZE" \
-  --sha256 "$GGUF_SHA256" \
-  --download_url "$DOWNLOAD_URL" \
-  $RECOMMENDED
+  --model_id "md-editor-writer-pro" \
+  --tier "pro" \
+  --display_name "Pro" \
+  --description "旗舰级深度长文创作、论文润色与逻辑重构（敬请期待）。" \
+  --asset_kind "legacy-model" \
+  --filename "" \
+  --size_bytes 0 \
+  --sha256 "" \
+  --download_url "" \
+  --no-available
 
 # ------------------------------------------------------------------------------
-# 步骤 5: 增量发布到 GitHub Releases
+# 步骤 5: 发布到 GitHub Releases
 # ------------------------------------------------------------------------------
 echo -e "\n🚀 [5/5] 发布与资产同步检查..."
 
@@ -174,7 +269,7 @@ $(cat "$MANIFEST_FILE")
 \`\`\`
 "
     if gh release view "$VERSION" --repo "$REPO" &> /dev/null; then
-        echo "🔄 增量追加新模型到已有 Release $VERSION..."
+        echo "🔄 增量追加资产到已有 Release $VERSION..."
         gh release upload "$VERSION" "$FINAL_GGUF" "$MANIFEST_FILE" --repo "$REPO" --clobber
         gh release edit "$VERSION" --repo "$REPO" --notes "$RELEASE_NOTES"
     else

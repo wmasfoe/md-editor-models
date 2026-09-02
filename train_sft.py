@@ -33,8 +33,10 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Fine-tune Qwen2.5 on Markdown SLM dataset with RFC-002 tokens and LoRA")
     
     # 模型与数据路径
-    parser.add_argument("--model_name_or_path", type=str, default="Qwen/Qwen2.5-0.5B-Instruct", help="Base model identifier or local path")
+    parser.add_argument("--model_name_or_path", type=str, default="Qwen/Qwen3-0.6B", help="Base model identifier or local path")
     parser.add_argument("--train_file", type=str, default="data/train.jsonl", help="Path to training jsonl file")
+    parser.add_argument("--task", type=str, default="multi", choices=["multi", "gec", "completion", "distill", "style-analysis"], help="Task profile for this adapter")
+    parser.add_argument("--adapter_id", type=str, default="", help="Stable adapter identifier")
     parser.add_argument("--val_file", type=str, default="data/val.jsonl", help="Path to validation jsonl file")
     parser.add_argument("--output_dir", type=str, default="output/qwen-0.5b-editor-lora", help="Directory to save LoRA checkpoints")
     
@@ -59,12 +61,51 @@ def parse_args():
 
     return parser.parse_args()
 
+def filter_dataset_by_task(dataset, task):
+    """任务专用训练：按消息文本中的任务控制符过滤样本。
+    仅当 --task 指定为单一任务时生效，--task multi 保持全量多任务数据。
+    """
+    if task == "multi":
+        return dataset
+
+    def _markers(task_name):
+        # 控制符 → 任务关键词映射（与 build_dataset.py 产出一致）
+        return {
+            "gec": ["<|task_gec_zh|>", "<|task_gec_mixed|>", "<|task_gec_en|>",
+                    "<|task_punc|>", "<|task_preserve|>"],
+            "completion": ["<|task_completion|>", "<|fim_prefix|>"],
+            "distill": ["<|task_distill|>"],
+            "style-analysis": ["<|task_distill|>"],  # 风格分析尚未有专属语料，先复用提炼入口
+        }[task_name]
+
+    def _sample_text(sample):
+        parts = []
+        for msg in sample.get("messages", []):
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                parts.append(content)
+        return "".join(parts)
+
+    def _keep(sample):
+        text = _sample_text(sample)
+        return any(marker in text for marker in _markers(task))
+
+    filtered = dataset.filter(_keep)
+    print(f"🎯 任务过滤 ({task}): {len(dataset)} → {len(filtered)} 条")
+    if len(filtered) == 0:
+        raise ValueError(
+            f"--task {task} 过滤后训练样本为 0，请检查数据是否包含对应任务控制符。"
+        )
+    return filtered
+
+
 def main():
     args = parse_args()
     
     print("=" * 60)
-    print(f"🚀 Starting RFC-002 SLM High-Throughput Fine-Tuning Pipeline")
+    print(f"🚀 Starting SLM High-Throughput Fine-Tuning Pipeline")
     print(f"🔹 Base Model:   {args.model_name_or_path}")
+    print(f"🔹 Task:         {args.task}" + (f" (adapter: {args.adapter_id})" if args.adapter_id else ""))
     print(f"🔹 Train Dataset: {args.train_file}")
     print(f"🔹 Val Dataset:   {args.val_file}")
     print(f"🔹 Batch Size:    {args.batch_size} (Grad Accum: {args.gradient_accumulation_steps})")
@@ -76,12 +117,15 @@ def main():
     if not os.path.exists(args.train_file):
         raise FileNotFoundError(f"Training dataset not found: {args.train_file}. Please run scripts/build_dataset.py first!")
 
-    # 2. 加载数据集
+    # 2. 加载数据集（任务专用训练时按任务控制符过滤）
     data_files = {"train": args.train_file}
     if os.path.exists(args.val_file):
         data_files["validation"] = args.val_file
         
     dataset = load_dataset("json", data_files=data_files)
+    dataset["train"] = filter_dataset_by_task(dataset["train"], args.task)
+    if "validation" in dataset:
+        dataset["validation"] = filter_dataset_by_task(dataset["validation"], args.task)
     print(f"✅ Loaded {len(dataset['train'])} training samples" + 
           (f" and {len(dataset['validation'])} validation samples." if "validation" in dataset else "."))
 
@@ -132,6 +176,8 @@ def main():
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        # 新增任务控制符需要保存 embedding 与输出头，否则 Adapter 重载后可能丢失任务路由能力。
+        modules_to_save=["embed_tokens", "lm_head"],
         bias="none"
     )
 

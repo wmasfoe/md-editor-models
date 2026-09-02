@@ -356,6 +356,22 @@ def build_dataset_rfc003():
         samples.append({"messages": [{"role": "user", "content": f"<|task_preserve|>{p}"}, {"role": "assistant", "content": "[]"}]})
 
     # 打乱并切分数据集 (90% 训练集, 10% 验证集)
+    # 质量门禁：固定模板/硬负样本被放大重复后，同一文本最多保留 MAX_DUP 份，避免模型背诵样本。
+    MAX_DUP = 10
+    print(f"\n🧹 去重前样本数: {len(samples)}（重复上限每文本 {MAX_DUP} 条）")
+    seen_counts = {}
+    deduped = []
+    for s in samples:
+        key = json.dumps(s, ensure_ascii=False, sort_keys=True)
+        count = seen_counts.get(key, 0)
+        if count >= MAX_DUP:
+            continue
+        seen_counts[key] = count + 1
+        deduped.append(s)
+    removed = len(samples) - len(deduped)
+    samples = deduped
+    print(f"🧹 去重后样本数: {len(samples)}（移除 {removed} 条重复）")
+
     random.seed(42)
     random.shuffle(samples)
     
@@ -374,6 +390,7 @@ def build_dataset_rfc003():
     print(f"\n🎉 RFC-003 终极增强版数据集构建完成！总计: {len(samples)} 条")
     print(f"├── 训练集 (data/train.jsonl): {len(train_samples)} 条")
     print(f"└── 验证集 (data/val.jsonl):   {len(val_samples)} 条")
+    print("⚠️ 注意：当前仍为随机切分，文档级防泄漏分组切分是后续改进项。")
 
 if __name__ == "__main__":
     build_dataset_rfc003()
