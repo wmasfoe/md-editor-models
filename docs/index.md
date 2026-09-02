@@ -15,6 +15,7 @@
 | [**RFC-001: 端侧小模型架构与基座设计**](./agent/architecture/local_ai_model_integration_plan.md) | `v1.0.0` (Active) | 基座选型 (Qwen2.5)、SLO 服务等级指标、C++ 原生推理架构设计 |
 | [**RFC-002: 客户端多模型分发与推理接入规范**](./agent/architecture/app_integration_spec_rfc002.md) | `v1.1.0` (Active) | 多模型矩阵 (Lite/Standard)、`manifest.json` 协议、GBNF 状态机约束 |
 | [**RFC-003: v1.2.0 GEC 语法纠错强化与接力发版规范**](./agent/architecture/gec_enhancement_and_handover_rfc003.md) | `v1.2.0` (Target) | 生产环境反馈对齐：草稿短句切片、拼音输入法同音词扰动、Hard Negatives |
+| [**任务 Adapter 能力矩阵、Qwen3 Lite 与训练发布方案**](./agent/architecture/adapter_capability_training_release_plan.md) | 方案确认 | Qwen3-0.6B Lite、任务专用 Adapter、能力矩阵、manifest 与训练发布改造 |
 
 ---
 
