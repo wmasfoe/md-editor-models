@@ -29,12 +29,16 @@ if [[ "$BASE_MODEL" == *"1.5B"* ]]; then
   DISPLAY_NAME="Qwen 2.5 1.5B (高精度进阶版)"
   DESCRIPTION="更强复杂长句纠错与代码续写能力，推荐 M 系列 Mac 或高配 PC"
   RECOMMENDED=""
+  BATCH_SIZE=16
+  GRAD_ACCUM=2
 else
   MODEL_ID="qwen2.5-0.5b-editor"
   TIER="lite"
   DISPLAY_NAME="Qwen 2.5 0.5B (轻量极速版)"
   DESCRIPTION="首字延迟 <30ms，内存仅占 280MB，适合所有轻薄本与日常流畅写作"
   RECOMMENDED="--recommended"
+  BATCH_SIZE=32
+  GRAD_ACCUM=1
 fi
 
 LORA_DIR="${OUTPUT_DIR}/${MODEL_ID}-lora"
@@ -90,8 +94,8 @@ else
       --val_file "data/val.jsonl" \
       --output_dir "$LORA_DIR" \
       --num_train_epochs 3 \
-      --batch_size 32 \
-      --gradient_accumulation_steps 1 \
+      --batch_size $BATCH_SIZE \
+      --gradient_accumulation_steps $GRAD_ACCUM \
       --learning_rate 2e-4 \
       --lora_r 32 \
       --lora_alpha 64 \
