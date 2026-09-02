@@ -29,15 +29,15 @@ if [[ "$BASE_MODEL" == *"1.5B"* ]]; then
   DISPLAY_NAME="Qwen 2.5 1.5B (高精度进阶版)"
   DESCRIPTION="更强复杂长句纠错与代码续写能力，推荐 M 系列 Mac 或高配 PC"
   RECOMMENDED=""
-  BATCH_SIZE=16
-  GRAD_ACCUM=2
+  BATCH_SIZE=64
+  GRAD_ACCUM=1
 else
   MODEL_ID="qwen2.5-0.5b-editor"
   TIER="lite"
   DISPLAY_NAME="Qwen 2.5 0.5B (轻量极速版)"
   DESCRIPTION="首字延迟 <30ms，内存仅占 280MB，适合所有轻薄本与日常流畅写作"
   RECOMMENDED="--recommended"
-  BATCH_SIZE=32
+  BATCH_SIZE=64
   GRAD_ACCUM=1
 fi
 
