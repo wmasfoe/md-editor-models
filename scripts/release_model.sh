@@ -106,15 +106,47 @@ else
     fi
 fi
 
-# 训练 Batch 与梯度累积配置：
-# - Lite (0.6B): 32 x 2 = 64 (兼容 T4 显存并保持等效批大小 64)
-# - Standard (1.7B): 16 x 4 = 64 (防止 1.7B 在 16GB T4 / 24GB L4 上爆显存，同时严格保持等效批大小 64)
-if [ "$TIER" = "standard" ]; then
-    BATCH_SIZE=16
-    GRAD_ACCUM=4
+# ------------------------------------------------------------------------------
+# 训练 Batch 与梯度累积配置 (硬件显存自适应)
+# 核心原则：无论硬件显存大小，全局严格保持等效批大小 (Effective Batch Size) = 64，
+# 确保梯度方向、AdamW 动量和学习率曲线数学上 100% 等价，模型效果绝对零损失。
+# ------------------------------------------------------------------------------
+GPU_MEM_MB=0
+if command -v nvidia-smi &> /dev/null; then
+    GPU_MEM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -n 1 | awk '{print int($1)}')
+    GPU_MEM_MB=${GPU_MEM_MB:-0}
+fi
+
+if [ "$GPU_MEM_MB" -ge 35000 ]; then
+    # A100 / H100 等 40GB+ 大显存：消除累积拆分开销，满血单步吞吐
+    if [ "$TIER" = "standard" ]; then
+        BATCH_SIZE=32
+        GRAD_ACCUM=2
+    else
+        BATCH_SIZE=64
+        GRAD_ACCUM=1
+    fi
+    echo "⚡ 检测到大显存 GPU (${GPU_MEM_MB}MB)，启用满血低/无累积吞吐配置 (BS=$BATCH_SIZE, Accum=$GRAD_ACCUM, 等效=64)"
+elif [ "$GPU_MEM_MB" -ge 20000 ]; then
+    # L4 / 3090 / 4090 等 24GB 显存卡
+    if [ "$TIER" = "standard" ]; then
+        BATCH_SIZE=16
+        GRAD_ACCUM=4
+    else
+        BATCH_SIZE=64
+        GRAD_ACCUM=1
+    fi
+    echo "⚡ 检测到 24GB 级 GPU (${GPU_MEM_MB}MB)，启用适配吞吐配置 (BS=$BATCH_SIZE, Accum=$GRAD_ACCUM, 等效=64)"
 else
-    BATCH_SIZE=32
-    GRAD_ACCUM=2
+    # T4 / 16GB 显存卡及其他默认环境：保证显存绝对安全
+    if [ "$TIER" = "standard" ]; then
+        BATCH_SIZE=16
+        GRAD_ACCUM=4
+    else
+        BATCH_SIZE=32
+        GRAD_ACCUM=2
+    fi
+    echo "🛡️ 检测到 16GB 或标准 GPU (${GPU_MEM_MB}MB)，启用安全批次配置 (BS=$BATCH_SIZE, Accum=$GRAD_ACCUM, 等效=64)"
 fi
 MANIFEST_FILE="${OUTPUT_DIR}/manifest.json"
 
