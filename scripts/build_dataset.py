@@ -373,11 +373,23 @@ def build_dataset_rfc003():
     print(f"🧹 去重后样本数: {len(samples)}（移除 {removed} 条重复）")
 
     random.seed(42)
-    random.shuffle(samples)
-    
-    split_idx = int(len(samples) * 0.9)
-    train_samples = samples[:split_idx]
-    val_samples = samples[split_idx:]
+    # 先按完整样本分组再切分：同一条（含模板重复）绝不能同时进入训练/验证，
+    # 否则 validation 会虚高。文档级 source_id 切分仍需数据源元数据完善后继续增强。
+    grouped_samples = {}
+    for sample in samples:
+        key = json.dumps(sample, ensure_ascii=False, sort_keys=True)
+        grouped_samples.setdefault(key, []).append(sample)
+    groups = list(grouped_samples.values())
+    random.shuffle(groups)
+
+    target_train_count = int(len(samples) * 0.9)
+    train_samples = []
+    val_samples = []
+    for group in groups:
+        if len(train_samples) < target_train_count:
+            train_samples.extend(group)
+        else:
+            val_samples.extend(group)
     
     os.makedirs("data", exist_ok=True)
     with open("data/train.jsonl", "w", encoding="utf-8") as f:
@@ -390,7 +402,7 @@ def build_dataset_rfc003():
     print(f"\n🎉 RFC-003 终极增强版数据集构建完成！总计: {len(samples)} 条")
     print(f"├── 训练集 (data/train.jsonl): {len(train_samples)} 条")
     print(f"└── 验证集 (data/val.jsonl):   {len(val_samples)} 条")
-    print("⚠️ 注意：当前仍为随机切分，文档级防泄漏分组切分是后续改进项。")
+    print("✅ 训练/验证已按完整样本分组切分；文档来源 source_id 级防泄漏仍需后续元数据完善。")
 
 if __name__ == "__main__":
     build_dataset_rfc003()
