@@ -274,10 +274,14 @@ echo "└── SHA256:  $GGUF_SHA256"
 # ------------------------------------------------------------------------------
 echo -e "\n📋 [4/5] 更新客户端 Manifest.json..."
 
-# 尝试从现有 Release 下载已有 manifest.json 进行增量合并
+# Manifest 基线：已存在的 Release 以远端 manifest 为增量基线（同版本多资产累积）；
+# 全新 Release 必须从空开始，避免本地 output/manifest.json 残留污染新版本目录。
 if command -v gh &> /dev/null && gh release view "$VERSION" --repo "$REPO" &> /dev/null; then
     echo "📥 发现现有 Release $VERSION，正在拉取已有 manifest.json 进行增量合并..."
     gh release download "$VERSION" -p "manifest.json" -O "$MANIFEST_FILE" --repo "$REPO" --clobber || true
+else
+    echo "🧹 全新版本 $VERSION：清空本地 manifest 残留，从零构建目录..."
+    rm -f "$MANIFEST_FILE"
 fi
 
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/$(basename "$FINAL_GGUF")"
@@ -347,6 +351,8 @@ $(cat "$MANIFEST_FILE")
         echo "🔄 增量追加资产到已有 Release $VERSION..."
         gh release upload "$VERSION" "$FINAL_GGUF" "$MANIFEST_FILE" --repo "$REPO" --clobber
         gh release edit "$VERSION" --repo "$REPO" --notes "$RELEASE_NOTES"
+        # 中断残留的 draft Release 在此补发布，避免资产上传后仍是草稿
+        gh release edit "$VERSION" --repo "$REPO" --draft=false 2>/dev/null || true
     else
         echo "✨ 创建全新 Release $VERSION..."
         gh release create "$VERSION" "$FINAL_GGUF" "$MANIFEST_FILE" \
