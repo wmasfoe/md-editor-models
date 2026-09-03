@@ -30,3 +30,5 @@
 ## 3. 全局总索引
 
 - [**../index.md**](../index.md)：项目全局总文档入口与快速启动指引。
+- [**adapter_capability_training_release_plan.md**](./architecture/adapter_capability_training_release_plan.md)
+  **用途**：记录 Qwen3-0.6B Lite、任务专用 Adapter、Lite/Standard 能力差异、manifest schema、训练数据质量门禁与发布流程。

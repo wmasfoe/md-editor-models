@@ -356,12 +356,40 @@ def build_dataset_rfc003():
         samples.append({"messages": [{"role": "user", "content": f"<|task_preserve|>{p}"}, {"role": "assistant", "content": "[]"}]})
 
     # 打乱并切分数据集 (90% 训练集, 10% 验证集)
+    # 质量门禁：固定模板/硬负样本被放大重复后，同一文本最多保留 MAX_DUP 份，避免模型背诵样本。
+    MAX_DUP = 10
+    print(f"\n🧹 去重前样本数: {len(samples)}（重复上限每文本 {MAX_DUP} 条）")
+    seen_counts = {}
+    deduped = []
+    for s in samples:
+        key = json.dumps(s, ensure_ascii=False, sort_keys=True)
+        count = seen_counts.get(key, 0)
+        if count >= MAX_DUP:
+            continue
+        seen_counts[key] = count + 1
+        deduped.append(s)
+    removed = len(samples) - len(deduped)
+    samples = deduped
+    print(f"🧹 去重后样本数: {len(samples)}（移除 {removed} 条重复）")
+
     random.seed(42)
-    random.shuffle(samples)
-    
-    split_idx = int(len(samples) * 0.9)
-    train_samples = samples[:split_idx]
-    val_samples = samples[split_idx:]
+    # 先按完整样本分组再切分：同一条（含模板重复）绝不能同时进入训练/验证，
+    # 否则 validation 会虚高。文档级 source_id 切分仍需数据源元数据完善后继续增强。
+    grouped_samples = {}
+    for sample in samples:
+        key = json.dumps(sample, ensure_ascii=False, sort_keys=True)
+        grouped_samples.setdefault(key, []).append(sample)
+    groups = list(grouped_samples.values())
+    random.shuffle(groups)
+
+    target_train_count = int(len(samples) * 0.9)
+    train_samples = []
+    val_samples = []
+    for group in groups:
+        if len(train_samples) < target_train_count:
+            train_samples.extend(group)
+        else:
+            val_samples.extend(group)
     
     os.makedirs("data", exist_ok=True)
     with open("data/train.jsonl", "w", encoding="utf-8") as f:
@@ -374,6 +402,7 @@ def build_dataset_rfc003():
     print(f"\n🎉 RFC-003 终极增强版数据集构建完成！总计: {len(samples)} 条")
     print(f"├── 训练集 (data/train.jsonl): {len(train_samples)} 条")
     print(f"└── 验证集 (data/val.jsonl):   {len(val_samples)} 条")
+    print("✅ 训练/验证已按完整样本分组切分；文档来源 source_id 级防泄漏仍需后续元数据完善。")
 
 if __name__ == "__main__":
     build_dataset_rfc003()
