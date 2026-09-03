@@ -64,9 +64,13 @@ if [ -z "$TIER" ]; then
     fi
 fi
 
-if [[ "$BASE_MODEL" == *"1.5B"* ]] || [[ "$BASE_MODEL" == *"1.7B"* ]]; then
+if [[ "$BASE_MODEL" == *"1.7B"* ]]; then
+    PARAM_TAG="1.7b"
+elif [[ "$BASE_MODEL" == *"1.5B"* ]]; then
     PARAM_TAG="1.5b"
-elif [[ "$BASE_MODEL" == *"3B"* ]] || [[ "$BASE_MODEL" == *"3.8B"* ]]; then
+elif [[ "$BASE_MODEL" == *"3.8B"* ]]; then
+    PARAM_TAG="3.8b"
+elif [[ "$BASE_MODEL" == *"3B"* ]]; then
     PARAM_TAG="3b"
 else
     PARAM_TAG="0.6b"
@@ -87,12 +91,12 @@ if [ "$ASSET_KIND" = "legacy-model" ]; then
 else
     MODEL_ID="md-editor-writer-${TIER}"
     if [ "$ASSET_KIND" = "base" ]; then
-        DISPLAY_NAME=$( [ "$TIER" = "lite" ] && echo "Lite (${PARAM_TAG}B)" || echo "Standard (${PARAM_TAG}B)" )
+        DISPLAY_NAME=$( [ "$TIER" = "lite" ] && echo "Lite (${PARAM_TAG})" || echo "Standard (${PARAM_TAG})" )
         DESCRIPTION="本地基座模型：与任务 Adapter 配合实现 GEC/续写等能力"
         RECOMMENDED=""
         [ "$TIER" = "lite" ] && RECOMMENDED="--recommended"
     else
-        DISPLAY_NAME=$( [ "$TIER" = "lite" ] && echo "Lite (${PARAM_TAG}B)" || echo "Standard (${PARAM_TAG}B)" )
+        DISPLAY_NAME=$( [ "$TIER" = "lite" ] && echo "Lite (${PARAM_TAG})" || echo "Standard (${PARAM_TAG})" )
         DESCRIPTION="任务专用 LoRA Adapter（${TASK}）"
         RECOMMENDED=""
     fi
