@@ -2,17 +2,16 @@
 # ==============================================================================
 # md-editor-models 一键微调、量化与 GitHub Release 发布流水线
 #
-# 两种用法：
-# 1) 旧版完整 GGUF（单个模型文件，兼容 v1.1.0 时代产物）:
-#    ./scripts/release_model.sh v1.2.0 Qwen/Qwen2.5-0.5B-Instruct
-#
-# 2) v2 分档发布（Base + 任务 Adapter）:
+# 三种资产模式：
+# 1) legacy-model（默认，兼容旧版完整 GGUF）:
+#    ./scripts/release_model.sh v1.2.0 Qwen/Qwen3-0.6B
+# 2) base（v2：从官方 GGUF 拉取并重量化为 Q4_K_M 的基座资产）:
 #    ./scripts/release_model.sh v1.2.0 Qwen/Qwen3-0.6B --tier lite --asset base
+# 3) adapter（v2：任务专用 LoRA，转 GGUF 后与 base 配合加载）:
 #    ./scripts/release_model.sh v1.2.0 Qwen/Qwen3-0.6B --tier lite --asset adapter --task gec
-#    ./scripts/release_model.sh v1.2.0 Qwen/Qwen3-0.6B --tier lite --asset adapter --task completion
 #
-# 说明：--asset base / adapter 时产物为 "merged 后完整模型" 或 "任务专用 SFT 模型"，
-#       manifest 会按 asset_kind 写入 base / capabilities.<task> 字段。
+# 依赖：llama.cpp 源码树（脚本自动克隆并编译 llama-quantize；
+#       convert_lora_to_gguf.py 需要 llama.cpp 仓库内 conversion/ 与 gguf-py）
 # ==============================================================================
 
 set -e
@@ -31,6 +30,10 @@ while [ $# -gt 0 ]; do
     *) echo "❌ 未知参数: $1"; exit 1;;
   esac
 done
+
+if [ "$ASSET_KIND" = "adapter" ] && [ -z "$TASK" ]; then
+  echo "❌ --asset adapter 必须提供 --task (gec|completion|distill|style-analysis)"; exit 1
+fi
 
 REPO="wmasfoe/md-editor-models"
 
@@ -54,14 +57,14 @@ if [[ "$BASE_MODEL" == *"Qwen2.5"* ]]; then
 fi
 
 if [ -z "$TIER" ]; then
-    if [[ "$BASE_MODEL" == *"1.5B"* ]]; then
+    if [[ "$BASE_MODEL" == *"1.5B"* ]] || [[ "$BASE_MODEL" == *"1.7B"* ]]; then
         TIER="standard"
     else
         TIER="lite"
     fi
 fi
 
-if [[ "$BASE_MODEL" == *"1.5B"* ]]; then
+if [[ "$BASE_MODEL" == *"1.5B"* ]] || [[ "$BASE_MODEL" == *"1.7B"* ]]; then
     PARAM_TAG="1.5b"
 elif [[ "$BASE_MODEL" == *"3B"* ]] || [[ "$BASE_MODEL" == *"3.8B"* ]]; then
     PARAM_TAG="3b"
@@ -69,64 +72,78 @@ else
     PARAM_TAG="0.6b"
 fi
 
+# v2 逻辑档位统一使用客户端逻辑 modelId（与 md-editor manifest 对齐）
 if [ "$ASSET_KIND" = "legacy-model" ]; then
     MODEL_ID="${MODEL_FAMILY}-${PARAM_TAG}-editor"
     DISPLAY_NAME="Qwen ${PARAM_TAG} Editor (自动档)"
     DESCRIPTION="端侧垂直小模型（多任务统一版）"
+    RECOMMENDED=""
     if [ "$TIER" = "standard" ]; then
         DISPLAY_NAME="Qwen ${PARAM_TAG} Editor (高精度进阶版)"
         DESCRIPTION="更强复杂长句纠错与代码续写能力，推荐 M 系列 Mac 或高配 PC"
-        RECOMMENDED=""
     else
         RECOMMENDED="--recommended"
     fi
-elif [ "$ASSET_KIND" = "base" ]; then
-    MODEL_ID="md-editor-writer-${TIER}"
-    DISPLAY_NAME=$( [ "$TIER" = "lite" ] && echo "Lite (0.6B)" || echo "Standard (${PARAM_TAG}B)" )
-    DESCRIPTION=$( [ "$TIER" = "lite" ] && echo "轻量极速版：GEC 修复与 FIM 续写" || echo "高精度进阶版：GEC 修复与 FIM 续写" )
-    RECOMMENDED=""
-    [ "$TIER" = "lite" ] && RECOMMENDED="--recommended"
 else
     MODEL_ID="md-editor-writer-${TIER}"
-    DISPLAY_NAME=$( [ "$TIER" = "lite" ] && echo "Lite (0.6B)" || echo "Standard (${PARAM_TAG}B)" )
-    DESCRIPTION="任务专用 Adapter（${TASK}）"
-    RECOMMENDED=""
+    if [ "$ASSET_KIND" = "base" ]; then
+        DISPLAY_NAME=$( [ "$TIER" = "lite" ] && echo "Lite (${PARAM_TAG}B)" || echo "Standard (${PARAM_TAG}B)" )
+        DESCRIPTION="本地基座模型：与任务 Adapter 配合实现 GEC/续写等能力"
+        RECOMMENDED=""
+        [ "$TIER" = "lite" ] && RECOMMENDED="--recommended"
+    else
+        DISPLAY_NAME=$( [ "$TIER" = "lite" ] && echo "Lite (${PARAM_TAG}B)" || echo "Standard (${PARAM_TAG}B)" )
+        DESCRIPTION="任务专用 LoRA Adapter（${TASK}）"
+        RECOMMENDED=""
+    fi
 fi
 
 BATCH_SIZE=64
 GRAD_ACCUM=1
+MANIFEST_FILE="${OUTPUT_DIR}/manifest.json"
 
-# 旧版完整模型产物名（legacy 仍保留 modelId-version 命名以兼容历史 Release 资产）
+# 量化标签：base/legacy 产物为 Q4_K_M，adapter LoRA 为 f16（精度优先，体积小不量化）
+if [ "$ASSET_KIND" = "adapter" ]; then
+    QUANT_LABEL="f16"
+else
+    QUANT_LABEL="Q4_K_M"
+fi
+
+# 产物路径（按资产类型区分）
 if [ "$ASSET_KIND" = "legacy-model" ]; then
     LORA_DIR="${OUTPUT_DIR}/${MODEL_ID}-lora"
     MERGED_DIR="${OUTPUT_DIR}/${MODEL_ID}-merged"
     F16_GGUF="${OUTPUT_DIR}/${MODEL_ID}-f16.gguf"
     FINAL_GGUF="${OUTPUT_DIR}/${MODEL_ID}-${VERSION}-Q4_K_M.gguf"
 else
-    BASE_SHORT=$(echo "$BASE_MODEL" | tr '/' '-')
     LORA_DIR="${OUTPUT_DIR}/lora-${TIER}-${TASK:-base}"
     MERGED_DIR="${OUTPUT_DIR}/merged-${TIER}-${TASK:-base}"
     F16_GGUF="${OUTPUT_DIR}/tmp-${TIER}-${TASK:-base}-f16.gguf"
-    FINAL_GGUF="${OUTPUT_DIR}/${TIER}-${TASK:-base}-${MODEL_FAMILY}-${PARAM_TAG}-${VERSION}-Q4_K_M.gguf"
+    if [ "$ASSET_KIND" = "base" ]; then
+        # base：官方 GGUF Q8_0 → 重量化为 Q4_K_M（HF model id 推导 GGUF 仓库与文件名）
+        HF_BASENAME=$(basename "$BASE_MODEL")
+        OFFICIAL_GGUF_URL="https://huggingface.co/${HF_BASENAME}-GGUF/resolve/main/${HF_BASENAME}-Q8_0.gguf"
+        FINAL_GGUF="${OUTPUT_DIR}/${TIER}-base-${MODEL_FAMILY}-${PARAM_TAG}-${VERSION}-Q4_K_M.gguf"
+    else
+        # adapter：LoRA adapter GGUF（f16，精度优先）
+        FINAL_GGUF="${OUTPUT_DIR}/${TIER}-${TASK}-${MODEL_FAMILY}-${PARAM_TAG}-${VERSION}-lora-f16.gguf"
+    fi
 fi
-MANIFEST_FILE="${OUTPUT_DIR}/manifest.json"
 
 echo "======================================================================"
 echo "🚀 md-editor-models 发布流水线"
-echo "🔹 版本 (Version):        $VERSION"
-echo "🔹 基座 (Base):           $BASE_MODEL"
-echo "🔹 资产类型 (Asset):      $ASSET_KIND"
-echo "🔹 任务 (Task):           ${TASK:-（无）}"
-echo "🔹 档位 (Tier):           $TIER"
-echo "🔹 产物 (Output):         $FINAL_GGUF"
+echo "🔹 版本 (Version):     $VERSION"
+echo "🔹 基座 (Base):        $BASE_MODEL"
+echo "🔹 资产类型 (Asset):   $ASSET_KIND"
+echo "🔹 任务 (Task):        ${TASK:-（无）}"
+echo "🔹 档位 (Tier):        $TIER"
+echo "🔹 产物 (Output):      $FINAL_GGUF"
 echo "======================================================================"
 
 # ------------------------------------------------------------------------------
-# 步骤 1: 检查前置依赖与编译 llama.cpp 量化工具
+# 步骤 1: 准备 llama.cpp（quantize + LoRA 转换工具）
 # ------------------------------------------------------------------------------
-echo -e "\n📦 [1/5] 检查系统环境与量化工具..."
-pip install -q sentencepiece gguf protobuf "torchao>=0.16.0" 2>/dev/null || true
-
+echo -e "\n📦 [1/5] 准备 llama.cpp 量化/LoRA 工具..."
 if [ ! -f "llama.cpp/build/bin/llama-quantize" ] && [ ! -f "llama.cpp/llama-quantize" ]; then
     echo "⚙️ 正在自动拉取并轻量编译 llama.cpp 量化工具..."
     if [ ! -d "llama.cpp" ]; then
@@ -142,54 +159,90 @@ if [ ! -f "$QUANTIZE_BIN" ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 步骤 2: SFT 训练与 LoRA 权重合并
+# 步骤 2: 按资产类型准备模型权重
 # ------------------------------------------------------------------------------
-echo -e "\n🔥 [2/5] 检查 SFT 微调模型..."
+echo -e "\n🔥 [2/5] 准备模型权重 (asset=$ASSET_KIND)..."
 
-if [ -d "$MERGED_DIR" ] && [ -f "$MERGED_DIR/model.safetensors" ]; then
-    echo "✨ 检测到已训练合并好的模型 ($MERGED_DIR)，直接进入 GGUF 量化阶段！"
+if [ "$ASSET_KIND" = "base" ]; then
+    # base：下载官方 GGUF 并重量化为 Q4_K_M（无需训练）
+    if [ ! -f "$FINAL_GGUF" ]; then
+        echo "📥 下载官方基座 GGUF: $OFFICIAL_GGUF_URL"
+        curl -sL --fail --max-time 900 -o "${OUTPUT_DIR}/official-${HF_BASENAME}-Q8_0.gguf" "$OFFICIAL_GGUF_URL"
+        echo "⚙️ 重量化为 Q4_K_M..."
+        "$QUANTIZE_BIN" "${OUTPUT_DIR}/official-${HF_BASENAME}-Q8_0.gguf" "$FINAL_GGUF" Q4_K_M
+        rm -f "${OUTPUT_DIR}/official-${HF_BASENAME}-Q8_0.gguf"
+    fi
+elif [ "$ASSET_KIND" = "adapter" ]; then
+    # adapter：任务专用 LoRA 训练（不合并），转 LoRA GGUF
+    if [ ! -f "$FINAL_GGUF" ]; then
+        if [ ! -d "$LORA_DIR" ] || [ ! -f "$LORA_DIR/adapter_model.safetensors" ]; then
+            if [ ! -f "data/train.jsonl" ]; then
+                echo "📊 正在自动构建 RFC-003 数据集..."
+                $PY_CMD scripts/build_dataset.py
+            fi
+            $PY_CMD train_sft.py \
+              --model_name_or_path "$BASE_MODEL" \
+              --train_file "data/train.jsonl" \
+              --val_file "data/val.jsonl" \
+              --output_dir "$LORA_DIR" \
+              --task "$TASK" \
+              --adapter_id "${MODEL_ID}-${TASK}" \
+              --num_train_epochs 3 \
+              --batch_size $BATCH_SIZE \
+              --gradient_accumulation_steps $GRAD_ACCUM \
+              --learning_rate 2e-4 \
+              --lora_r 32 \
+              --lora_alpha 64
+            echo "✅ 任务专用 LoRA 训练完成: $LORA_DIR"
+        fi
+        echo "🔄 转换 LoRA → GGUF (f16)..."
+        python3 llama.cpp/convert_lora_to_gguf.py "$LORA_DIR" \
+          --outfile "$FINAL_GGUF" \
+          --outtype f16 \
+          --base-model-id "$BASE_MODEL"
+    fi
 else
-    if [ ! -f "data/train.jsonl" ]; then
-        echo "📊 正在自动构建 RFC-003 数据集..."
-        $PY_CMD scripts/build_dataset.py
+    # legacy-model：多任务 SFT → 合并完整模型（向后兼容）
+    if [ -d "$MERGED_DIR" ] && [ -f "$MERGED_DIR/model.safetensors" ]; then
+        echo "✨ 检测到已训练合并好的模型 ($MERGED_DIR)，直接进入 GGUF 量化阶段！"
+    else
+        if [ ! -f "data/train.jsonl" ]; then
+            echo "📊 正在自动构建 RFC-003 数据集..."
+            $PY_CMD scripts/build_dataset.py
+        fi
+        $PY_CMD train_sft.py \
+          --model_name_or_path "$BASE_MODEL" \
+          --train_file "data/train.jsonl" \
+          --val_file "data/val.jsonl" \
+          --output_dir "$LORA_DIR" \
+          --num_train_epochs 3 \
+          --batch_size $BATCH_SIZE \
+          --gradient_accumulation_steps $GRAD_ACCUM \
+          --learning_rate 2e-4 \
+          --lora_r 32 \
+          --lora_alpha 64 \
+          --merge_and_save \
+          --merged_output_dir "$MERGED_DIR"
+        echo "✅ SFT 训练与模型合并完成: $MERGED_DIR"
     fi
-
-    TASK_ARGS=()
-    if [ "$ASSET_KIND" = "adapter" ] && [ -n "$TASK" ]; then
-        TASK_ARGS+=(--task "$TASK" --adapter_id "${MODEL_ID}-${TASK}")
-    fi
-
-    $PY_CMD train_sft.py \
-      --model_name_or_path "$BASE_MODEL" \
-      --train_file "data/train.jsonl" \
-      --val_file "data/val.jsonl" \
-      --output_dir "$LORA_DIR" \
-      --num_train_epochs 3 \
-      --batch_size $BATCH_SIZE \
-      --gradient_accumulation_steps $GRAD_ACCUM \
-      --learning_rate 2e-4 \
-      --lora_r 32 \
-      --lora_alpha 64 \
-      --merge_and_save \
-      --merged_output_dir "$MERGED_DIR" \
-      "${TASK_ARGS[@]}"
-
-    echo "✅ SFT 训练与模型合并完成: $MERGED_DIR"
 fi
 
 # ------------------------------------------------------------------------------
-# 步骤 3: 转换为 GGUF 并进行 Q4_K_M 量化
+# 步骤 3: 转换为 GGUF 并进行 Q4_K_M 量化（legacy 完整模型需要）
 # ------------------------------------------------------------------------------
-echo -e "\n⚡ [3/5] 正在转换为 GGUF 并执行 Q4_K_M 端侧极致量化..."
-
-python3 llama.cpp/convert_hf_to_gguf.py "$MERGED_DIR" --outfile "$F16_GGUF" --outtype f16
-"$QUANTIZE_BIN" "$F16_GGUF" "$FINAL_GGUF" Q4_K_M
-rm -f "$F16_GGUF"
+if [ "$ASSET_KIND" = "legacy-model" ]; then
+    echo -e "\n⚡ [3/5] 正在转换为 GGUF 并执行 Q4_K_M 端侧极致量化..."
+    python3 llama.cpp/convert_hf_to_gguf.py "$MERGED_DIR" --outfile "$F16_GGUF" --outtype f16
+    "$QUANTIZE_BIN" "$F16_GGUF" "$FINAL_GGUF" Q4_K_M
+    rm -f "$F16_GGUF"
+else
+    echo -e "\n⚡ [3/5] 资产已就绪，跳过完整模型转换。"
+fi
 
 GGUF_SIZE=$(stat -c%s "$FINAL_GGUF" 2>/dev/null || stat -f%z "$FINAL_GGUF")
 GGUF_SHA256=$(sha256sum "$FINAL_GGUF" | awk '{print $1}')
 
-echo "✅ GGUF 量化完成!"
+echo "✅ 产物校验完成!"
 echo "├── 文件路径: $FINAL_GGUF"
 echo "├── 文件大小: $(( GGUF_SIZE / 1024 / 1024 )) MB ($GGUF_SIZE 字节)"
 echo "└── SHA256:  $GGUF_SHA256"
@@ -214,7 +267,7 @@ MANIFEST_ARGS=(
   --tier "$TIER"
   --display_name "$DISPLAY_NAME"
   --description "$DESCRIPTION"
-  --quant "Q4_K_M"
+  --quant "$QUANT_LABEL"
   --filename "$(basename "$FINAL_GGUF")"
   --size_bytes "$GGUF_SIZE"
   --sha256 "$GGUF_SHA256"
