@@ -106,8 +106,16 @@ else
     fi
 fi
 
-BATCH_SIZE=64
-GRAD_ACCUM=1
+# 训练 Batch 与梯度累积配置：
+# - Lite (0.6B): 32 x 2 = 64 (兼容 T4 显存并保持等效批大小 64)
+# - Standard (1.7B): 16 x 4 = 64 (防止 1.7B 在 16GB T4 / 24GB L4 上爆显存，同时严格保持等效批大小 64)
+if [ "$TIER" = "standard" ]; then
+    BATCH_SIZE=16
+    GRAD_ACCUM=4
+else
+    BATCH_SIZE=32
+    GRAD_ACCUM=2
+fi
 MANIFEST_FILE="${OUTPUT_DIR}/manifest.json"
 
 # 量化标签：base=Q8_0，adapter/legacy=f16
@@ -214,7 +222,7 @@ elif [ "$ASSET_KIND" = "adapter" ]; then
               --output_dir "$LORA_DIR" \
               --task "$TASK" \
               --adapter_id "${MODEL_ID}-${TASK}" \
-              --num_train_epochs 3 \
+              --num_train_epochs 2 \
               --batch_size $BATCH_SIZE \
               --gradient_accumulation_steps $GRAD_ACCUM \
               --learning_rate 2e-4 \
@@ -244,7 +252,7 @@ else
           --train_file "data/train.jsonl" \
           --val_file "data/val.jsonl" \
           --output_dir "$LORA_DIR" \
-          --num_train_epochs 3 \
+          --num_train_epochs 2 \
           --batch_size $BATCH_SIZE \
           --gradient_accumulation_steps $GRAD_ACCUM \
           --learning_rate 2e-4 \

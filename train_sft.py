@@ -41,7 +41,7 @@ def parse_args():
     parser.add_argument("--output_dir", type=str, default="output/qwen-0.5b-editor-lora", help="Directory to save LoRA checkpoints")
     
     # 训练超参数 (针对 L4 / 现代 GPU 高吞吐优化)
-    parser.add_argument("--num_train_epochs", type=int, default=3, help="Total training epochs")
+    parser.add_argument("--num_train_epochs", type=int, default=2, help="Total training epochs (2 for optimal LoRA convergence)")
     parser.add_argument("--batch_size", type=int, default=64, help="Per-device batch size (64 for A100)")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
     parser.add_argument("--learning_rate", type=float, default=2e-4, help="Initial learning rate")
@@ -223,8 +223,16 @@ def main():
         processing_class=tokenizer
     )
 
+    # 自动检测检查点以支持中断续训
+    last_checkpoint = None
+    if os.path.isdir(args.output_dir):
+        from transformers.trainer_utils import get_last_checkpoint
+        last_checkpoint = get_last_checkpoint(args.output_dir)
+        if last_checkpoint is not None:
+            print(f"🔄 发现可用检查点: {last_checkpoint}，自动接续训练...")
+
     print("\n🔥 Starting training...")
-    trainer.train()
+    trainer.train(resume_from_checkpoint=last_checkpoint)
 
     # 8. 保存最佳 LoRA Adapter 权重与更新后的 Tokenizer
     print(f"\n💾 Saving final LoRA adapter to {args.output_dir}...")
