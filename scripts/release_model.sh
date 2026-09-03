@@ -111,7 +111,9 @@ GRAD_ACCUM=1
 MANIFEST_FILE="${OUTPUT_DIR}/manifest.json"
 
 # 量化标签：base 直接采用官方 Q8_0（不再本地重量化），adapter LoRA 为 f16，legacy 为 Q4_K_M
-if [ "$ASSET_KIND" = "base" ] || [ "$ASSET_KIND" = "adapter" ]; then
+if [ "$ASSET_KIND" = "adapter" ]; then
+    QUANT_LABEL="f16"
+elif [ "$ASSET_KIND" = "base" ]; then
     QUANT_LABEL="Q8_0"
 else
     QUANT_LABEL="f16"
@@ -139,8 +141,8 @@ else
         OFFICIAL_GGUF_URL="https://huggingface.co/${HF_NAMESPACE}/${HF_BASENAME}-GGUF/resolve/main/${HF_BASENAME}-Q8_0.gguf"
         FINAL_GGUF="${OUTPUT_DIR}/${TIER}-base-${MODEL_FAMILY}-${PARAM_TAG}-${VERSION}-Q8_0.gguf"
     else
-        # adapter：合并回基座的完整任务模型（Q8_0，可含扩展任务 Token）
-        FINAL_GGUF="${OUTPUT_DIR}/${TIER}-${TASK}-${MODEL_FAMILY}-${PARAM_TAG}-${VERSION}-Q8_0.gguf"
+        # adapter：纯 LoRA delta（f16，几十 MB 级）。词表不扩展，llama.cpp 可直接 --lora 加载。
+        FINAL_GGUF="${OUTPUT_DIR}/${TIER}-${TASK}-${MODEL_FAMILY}-${PARAM_TAG}-${VERSION}-lora-f16.gguf"
     fi
 fi
 
@@ -186,10 +188,13 @@ if [ "$ASSET_KIND" = "base" ]; then
         mv "$BASE_DOWNLOAD_PATH" "$FINAL_GGUF"
     fi
 elif [ "$ASSET_KIND" = "adapter" ]; then
-    # adapter：任务专用 LoRA 训练 → 合并回基座（保留扩展任务 Token）→ 转换完整 GGUF。
-    # 不能直接转 LoRA：任务 Token 扩展了词表，embed_tokens/lm_head 以 modules_to_save
-    # 保存完整权重，llama.cpp LoRA 格式不支持这类张量。
+    # adapter：任务专用纯 LoRA（词表不扩展）→ 直接转换 llama.cpp LoRA GGUF（几十 MB 级）。
+    # 若检测到旧配置（modules_to_save）训练的产物，删除并重训，避免误发布不可加载的 LoRA。
     if [ ! -f "$FINAL_GGUF" ]; then
+        if [ -f "$LORA_DIR/adapter_config.json" ] && grep -q 'modules_to_save' "$LORA_DIR/adapter_config.json"; then
+            echo "🧹 检测到旧配置训练的 Adapter（含 modules_to_save），删除并重新训练..."
+            rm -rf "$LORA_DIR"
+        fi
         if [ ! -d "$LORA_DIR" ] || [ ! -f "$LORA_DIR/adapter_model.safetensors" ]; then
             if [ ! -f "data/train.jsonl" ]; then
                 echo "📊 正在自动构建 RFC-003 数据集..."
@@ -209,18 +214,14 @@ elif [ "$ASSET_KIND" = "adapter" ]; then
               --lora_r 32 \
               --lora_alpha 64
             echo "✅ 任务专用 LoRA 训练完成: $LORA_DIR"
-        fi
-        if [ ! -d "$MERGED_DIR" ] || [ ! -f "$MERGED_DIR/model.safetensors" ]; then
-            echo "🔄 合并 LoRA 回基座模型（保留任务 Token 词表）..."
-            python3 scripts/merge_adapter.py \
-              --base "$BASE_MODEL" \
-              --adapter "$LORA_DIR" \
-              --output "$MERGED_DIR"
         else
-            echo "✨ 复用已合并模型: $MERGED_DIR"
+            echo "✨ 复用已训练 Adapter: $LORA_DIR"
         fi
-        echo "🔄 转换完整模型 → GGUF (Q8_0)..."
-        python3 llama.cpp/convert_hf_to_gguf.py "$MERGED_DIR" --outfile "$FINAL_GGUF" --outtype q8_0
+        echo "🔄 转换 LoRA → GGUF (f16)..."
+        python3 llama.cpp/convert_lora_to_gguf.py "$LORA_DIR" \
+          --outfile "$FINAL_GGUF" \
+          --outtype f16 \
+          --base-model-id "$BASE_MODEL"
     fi
 else
     # legacy-model：多任务 SFT → 合并完整模型（向后兼容）

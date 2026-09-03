@@ -138,10 +138,18 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # 注入特殊控制符（确保不被拆分为普通 subwords）
-    num_added = tokenizer.add_special_tokens({"additional_special_tokens": SPECIAL_TOKENS})
-    if num_added > 0:
-        print(f"✨ Registered {num_added} RFC-002 special control tokens in tokenizer vocabulary: {SPECIAL_TOKENS}")
+    # 任务控制符按训练模式区分处理：
+    # - multi（legacy 完整模型）：注册为特殊 Token 并扩展词表，保持 v1.1 兼容语义
+    # - 单任务 Adapter：不注册 Token。<|task_*|> 作为普通文本参与训练（客户端 prompt
+    #   也以文本字符串发送，两侧编码一致），从而保持纯 LoRA delta，可被
+    #   llama.cpp convert_lora_to_gguf 接受（该格式不支持扩词表/modules_to_save 完整权重）。
+    num_added = 0
+    if args.task == "multi":
+        num_added = tokenizer.add_special_tokens({"additional_special_tokens": SPECIAL_TOKENS})
+        if num_added > 0:
+            print(f"✨ Registered {num_added} RFC-002 special control tokens in tokenizer vocabulary: {SPECIAL_TOKENS}")
+    else:
+        print(f"ℹ️ 单任务 Adapter 模式（{args.task}）：任务控制符按普通文本训练，不扩展词表。")
 
     # 4. 加载基座模型（支持 QLoRA 4-bit 量化加载，L4 显存足够直接 FP16/BF16）
     bnb_config = None
@@ -170,14 +178,16 @@ def main():
         model.resize_token_embeddings(len(tokenizer))
 
     # 5. 配置 LoRA
+    # 单任务 Adapter 必须保持纯 delta（仅 lora_A/lora_B），不包含 modules_to_save：
+    # llama.cpp LoRA GGUF 无法表达完整权重副本，任何 modules_to_save 都会导致转换失败。
+    adapter_modules_to_save = ["embed_tokens", "lm_head"] if args.task == "multi" else None
     peft_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        # 新增任务控制符需要保存 embedding 与输出头，否则 Adapter 重载后可能丢失任务路由能力。
-        modules_to_save=["embed_tokens", "lm_head"],
+        modules_to_save=adapter_modules_to_save,
         bias="none"
     )
 
@@ -223,6 +233,11 @@ def main():
     print(f"✅ LoRA Adapter saved successfully!")
 
     # 9. 可选：合并 LoRA 权重到基座模型并导出完整模型（供 llama.cpp 转换为 GGUF）
+    if args.merge_and_save and args.task != "multi":
+        raise SystemExit(
+            "❌ --merge_and_save 仅适用于 multi（legacy 完整模型）模式。"
+            "单任务 Adapter 应直接转换 LoRA（llama.cpp convert_lora_to_gguf）。"
+        )
     if args.merge_and_save:
         print("\n🔄 Merging LoRA adapter with base model for standalone GGUF export...")
         base_model = AutoModelForCausalLM.from_pretrained(
