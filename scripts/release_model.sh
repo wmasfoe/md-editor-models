@@ -110,7 +110,7 @@ BATCH_SIZE=64
 GRAD_ACCUM=1
 MANIFEST_FILE="${OUTPUT_DIR}/manifest.json"
 
-# 量化标签：base 直接采用官方 Q8_0（不再本地重量化），adapter LoRA 为 f16，legacy 为 Q4_K_M
+# 量化标签：base=Q8_0，adapter/legacy=f16
 if [ "$ASSET_KIND" = "adapter" ]; then
     QUANT_LABEL="f16"
 elif [ "$ASSET_KIND" = "base" ]; then
@@ -172,20 +172,27 @@ echo "✅ llama.cpp 源码就绪: $PWD/llama.cpp"
 echo -e "\n🔥 [2/5] 准备模型权重 (asset=$ASSET_KIND)..."
 
 if [ "$ASSET_KIND" = "base" ]; then
-    # base：直接下载官方 Q8_0 GGUF 作为基座资产。
-    # 说明：不再进行 llama.cpp C++ 本地编译/重量化，Colab 上耗时且不稳定；
-    # Q8_0 已是官方高保真量化，体积约 640MB，可接受的端侧基座体积。
+    # base：官方 Q8_0 GGUF（内容与版本无关，只是文件名带版本号）。
     if [ ! -f "$FINAL_GGUF" ]; then
-        echo "📥 下载官方基座 GGUF: $OFFICIAL_GGUF_URL"
-        BASE_DOWNLOAD_PATH="${OUTPUT_DIR}/official-${HF_BASENAME}-Q8_0.gguf"
-        curl -sS -L --fail --max-time 900 -o "$BASE_DOWNLOAD_PATH" "$OFFICIAL_GGUF_URL"
-        if [ ! -s "$BASE_DOWNLOAD_PATH" ]; then
-            echo "❌ 官方 Base 下载为空，停止。"
-            rm -f "$BASE_DOWNLOAD_PATH"
-            exit 1
+        # 复用本机已下载的同档位旧版本 Base，避免每次发版重下数百 MB
+        EXISTING_BASE=$(ls "${OUTPUT_DIR}"/${TIER}-base-${MODEL_FAMILY}-${PARAM_TAG}-*-Q8_0.gguf 2>/dev/null | head -1)
+        EXISTING_SIZE=$(stat -c%s "$EXISTING_BASE" 2>/dev/null || echo 0)
+        if [ -n "$EXISTING_BASE" ] && [ "$EXISTING_SIZE" -gt 50000000 ]; then
+            echo "♻️ 复用本地已有 Base（$EXISTING_BASE，$(($EXISTING_SIZE / 1024 / 1024))MB），跳过下载"
+            cp "$EXISTING_BASE" "$FINAL_GGUF"
+        else
+            echo "📥 下载官方基座 GGUF: $OFFICIAL_GGUF_URL"
+            BASE_DOWNLOAD_PATH="${OUTPUT_DIR}/official-${HF_BASENAME}-Q8_0.gguf"
+            curl -sS -L --fail --max-time 900 -o "$BASE_DOWNLOAD_PATH" "$OFFICIAL_GGUF_URL"
+            if [ ! -s "$BASE_DOWNLOAD_PATH" ]; then
+                echo "❌ 官方 Base 下载为空，停止。"
+                rm -f "$BASE_DOWNLOAD_PATH"
+                exit 1
+            fi
+            mv "$BASE_DOWNLOAD_PATH" "$FINAL_GGUF"
         fi
-        # 保留官方 Q8_0 原名作为正式资产，避免无效的本地重量化步骤
-        mv "$BASE_DOWNLOAD_PATH" "$FINAL_GGUF"
+    else
+        echo "✅ 目标 Base 已存在: $FINAL_GGUF"
     fi
 elif [ "$ASSET_KIND" = "adapter" ]; then
     # adapter：任务专用纯 LoRA（词表不扩展）→ 直接转换 llama.cpp LoRA GGUF（几十 MB 级）。
@@ -349,7 +356,24 @@ $(cat "$MANIFEST_FILE")
 "
     if gh release view "$VERSION" --repo "$REPO" &> /dev/null; then
         echo "🔄 增量追加资产到已有 Release $VERSION..."
-        gh release upload "$VERSION" "$FINAL_GGUF" "$MANIFEST_FILE" --repo "$REPO" --clobber
+        gh release upload "$VERSION" "$FINAL_GGUF" --repo "$REPO" --clobber
+        # 以远端最新 manifest 为基线重新合并（当前本地只含本次资产，直接覆盖会丢 capabilities）
+        gh release download "$VERSION" -p "manifest.json" -O "$MANIFEST_FILE" --repo "$REPO" --clobber || true
+        $PY_CMD scripts/update_manifest.py "${MANIFEST_ARGS[@]}"
+        $PY_CMD scripts/update_manifest.py \
+          --manifest_path "$MANIFEST_FILE" \
+          --version "$VERSION" \
+          --model_id "md-editor-writer-pro" \
+          --tier "pro" \
+          --display_name "Pro" \
+          --description "旗舰级深度长文创作、论文润色与逻辑重构（敬请期待）。" \
+          --asset_kind "legacy-model" \
+          --filename "" \
+          --size_bytes 0 \
+          --sha256 "" \
+          --download_url "" \
+          --no-available
+        gh release upload "$VERSION" "$MANIFEST_FILE" --repo "$REPO" --clobber
         gh release edit "$VERSION" --repo "$REPO" --notes "$RELEASE_NOTES"
         # 中断残留的 draft Release 在此补发布，避免资产上传后仍是草稿
         gh release edit "$VERSION" --repo "$REPO" --draft=false 2>/dev/null || true
