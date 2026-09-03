@@ -5,7 +5,7 @@
 # 三种资产模式：
 # 1) legacy-model（默认，兼容旧版完整 GGUF）:
 #    ./scripts/release_model.sh v1.2.0 Qwen/Qwen3-0.6B
-# 2) base（v2：从官方 GGUF 拉取并重量化为 Q4_K_M 的基座资产）:
+# 2) base（v2：下载官方 GGUF Q8_0 作为基座资产）:
 #    ./scripts/release_model.sh v1.2.0 Qwen/Qwen3-0.6B --tier lite --asset base
 # 3) adapter（v2：任务专用 LoRA，转 GGUF 后与 base 配合加载）:
 #    ./scripts/release_model.sh v1.2.0 Qwen/Qwen3-0.6B --tier lite --asset adapter --task gec
@@ -111,11 +111,13 @@ BATCH_SIZE=64
 GRAD_ACCUM=1
 MANIFEST_FILE="${OUTPUT_DIR}/manifest.json"
 
-# 量化标签：base/legacy 产物为 Q4_K_M，adapter LoRA 为 f16（精度优先，体积小不量化）
+# 量化标签：base 直接采用官方 Q8_0（不再本地重量化），adapter LoRA 为 f16，legacy 为 Q4_K_M
 if [ "$ASSET_KIND" = "adapter" ]; then
     QUANT_LABEL="f16"
+elif [ "$ASSET_KIND" = "base" ]; then
+    QUANT_LABEL="Q8_0"
 else
-    QUANT_LABEL="Q4_K_M"
+    QUANT_LABEL="f16"
 fi
 
 # 产物路径（按资产类型区分）
@@ -123,13 +125,13 @@ if [ "$ASSET_KIND" = "legacy-model" ]; then
     LORA_DIR="${OUTPUT_DIR}/${MODEL_ID}-lora"
     MERGED_DIR="${OUTPUT_DIR}/${MODEL_ID}-merged"
     F16_GGUF="${OUTPUT_DIR}/${MODEL_ID}-f16.gguf"
-    FINAL_GGUF="${OUTPUT_DIR}/${MODEL_ID}-${VERSION}-Q4_K_M.gguf"
+    FINAL_GGUF="${OUTPUT_DIR}/${MODEL_ID}-${VERSION}-f16.gguf"
 else
     LORA_DIR="${OUTPUT_DIR}/lora-${TIER}-${TASK:-base}"
     MERGED_DIR="${OUTPUT_DIR}/merged-${TIER}-${TASK:-base}"
     F16_GGUF="${OUTPUT_DIR}/tmp-${TIER}-${TASK:-base}-f16.gguf"
     if [ "$ASSET_KIND" = "base" ]; then
-        # base：官方 GGUF Q8_0 → 重量化为 Q4_K_M。保留 Hugging Face 命名空间：
+        # base：官方 GGUF Q8_0 原样采用。保留 Hugging Face 命名空间：
         # Qwen/Qwen3-0.6B -> Qwen/Qwen3-0.6B-GGUF，而不是错误的 Qwen3-0.6B-GGUF。
         HF_NAMESPACE=$(dirname "$BASE_MODEL")
         HF_BASENAME=$(basename "$BASE_MODEL")
@@ -138,7 +140,7 @@ else
             exit 1
         fi
         OFFICIAL_GGUF_URL="https://huggingface.co/${HF_NAMESPACE}/${HF_BASENAME}-GGUF/resolve/main/${HF_BASENAME}-Q8_0.gguf"
-        FINAL_GGUF="${OUTPUT_DIR}/${TIER}-base-${MODEL_FAMILY}-${PARAM_TAG}-${VERSION}-Q4_K_M.gguf"
+        FINAL_GGUF="${OUTPUT_DIR}/${TIER}-base-${MODEL_FAMILY}-${PARAM_TAG}-${VERSION}-Q8_0.gguf"
     else
         # adapter：LoRA adapter GGUF（f16，精度优先）
         FINAL_GGUF="${OUTPUT_DIR}/${TIER}-${TASK}-${MODEL_FAMILY}-${PARAM_TAG}-${VERSION}-lora-f16.gguf"
@@ -158,20 +160,12 @@ echo "======================================================================"
 # ------------------------------------------------------------------------------
 # 步骤 1: 准备 llama.cpp（quantize + LoRA 转换工具）
 # ------------------------------------------------------------------------------
-echo -e "\n📦 [1/5] 准备 llama.cpp 量化/LoRA 工具..."
-if [ ! -f "llama.cpp/build/bin/llama-quantize" ] && [ ! -f "llama.cpp/llama-quantize" ]; then
-    echo "⚙️ 正在自动拉取并轻量编译 llama.cpp 量化工具..."
-    if [ ! -d "llama.cpp" ]; then
-        git clone --depth 1 https://github.com/ggerganov/llama.cpp
-    fi
-    cmake -B llama.cpp/build -S llama.cpp -DCMAKE_BUILD_TYPE=Release
-    cmake --build llama.cpp/build --config Release -j --target llama-quantize
+echo -e "\n📦 [1/5] 准备 llama.cpp 工具链源码..."
+if [ ! -d "llama.cpp" ]; then
+    echo "⚙️ 正在自动拉取 llama.cpp 源码（仅需 Python 转换工具，无需 C++ 编译）..."
+    git clone --depth 1 https://github.com/ggml-org/llama.cpp
 fi
-
-QUANTIZE_BIN="llama.cpp/build/bin/llama-quantize"
-if [ ! -f "$QUANTIZE_BIN" ]; then
-    QUANTIZE_BIN="llama.cpp/llama-quantize"
-fi
+echo "✅ llama.cpp 源码就绪: $PWD/llama.cpp"
 
 # ------------------------------------------------------------------------------
 # 步骤 2: 按资产类型准备模型权重
@@ -179,19 +173,20 @@ fi
 echo -e "\n🔥 [2/5] 准备模型权重 (asset=$ASSET_KIND)..."
 
 if [ "$ASSET_KIND" = "base" ]; then
-    # base：下载官方 GGUF 并重量化为 Q4_K_M（无需训练）
+    # base：直接下载官方 Q8_0 GGUF 作为基座资产。
+    # 说明：不再进行 llama.cpp C++ 本地编译/重量化，Colab 上耗时且不稳定；
+    # Q8_0 已是官方高保真量化，体积约 640MB，可接受的端侧基座体积。
     if [ ! -f "$FINAL_GGUF" ]; then
         echo "📥 下载官方基座 GGUF: $OFFICIAL_GGUF_URL"
         BASE_DOWNLOAD_PATH="${OUTPUT_DIR}/official-${HF_BASENAME}-Q8_0.gguf"
         curl -sS -L --fail --max-time 900 -o "$BASE_DOWNLOAD_PATH" "$OFFICIAL_GGUF_URL"
         if [ ! -s "$BASE_DOWNLOAD_PATH" ]; then
-            echo "❌ 官方 Base 下载为空，停止量化。"
+            echo "❌ 官方 Base 下载为空，停止。"
             rm -f "$BASE_DOWNLOAD_PATH"
             exit 1
         fi
-        echo "⚙️ 重量化为 Q4_K_M..."
-        "$QUANTIZE_BIN" "$BASE_DOWNLOAD_PATH" "$FINAL_GGUF" Q4_K_M
-        rm -f "$BASE_DOWNLOAD_PATH"
+        # 保留官方 Q8_0 原名作为正式资产，避免无效的本地重量化步骤
+        mv "$BASE_DOWNLOAD_PATH" "$FINAL_GGUF"
     fi
 elif [ "$ASSET_KIND" = "adapter" ]; then
     # adapter：任务专用 LoRA 训练（不合并），转 LoRA GGUF
@@ -249,13 +244,13 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 步骤 3: 转换为 GGUF 并进行 Q4_K_M 量化（legacy 完整模型需要）
+# 步骤 3: 转换为 GGUF（legacy 兼容模式需要）
 # ------------------------------------------------------------------------------
 if [ "$ASSET_KIND" = "legacy-model" ]; then
-    echo -e "\n⚡ [3/5] 正在转换为 GGUF 并执行 Q4_K_M 端侧极致量化..."
-    python3 llama.cpp/convert_hf_to_gguf.py "$MERGED_DIR" --outfile "$F16_GGUF" --outtype f16
-    "$QUANTIZE_BIN" "$F16_GGUF" "$FINAL_GGUF" Q4_K_M
-    rm -f "$F16_GGUF"
+    echo -e "\n⚡ [3/5] 正在转换为 GGUF（f16，兼容模式）..."
+    # convert_hf_to_gguf 仅支持 f32/f16/bf16/q8_0 等输出类型；Q4_K_M 需 C++ llama-quantize，
+    # 在 Colab 上为保持免编译，legacy 兼容资产直接采用 f16。
+    python3 llama.cpp/convert_hf_to_gguf.py "$MERGED_DIR" --outfile "$FINAL_GGUF" --outtype f16
 else
     echo -e "\n⚡ [3/5] 资产已就绪，跳过完整模型转换。"
 fi
