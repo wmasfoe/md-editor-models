@@ -47,6 +47,11 @@ else
 fi
 
 OUTPUT_DIR="output"
+mkdir -p "$OUTPUT_DIR"
+if [ ! -w "$OUTPUT_DIR" ]; then
+    echo "❌ 输出目录不可写: $OUTPUT_DIR"
+    exit 1
+fi
 
 # ------------------------------------------------------------------------------
 # 模型档位与元数据推断
@@ -177,10 +182,16 @@ if [ "$ASSET_KIND" = "base" ]; then
     # base：下载官方 GGUF 并重量化为 Q4_K_M（无需训练）
     if [ ! -f "$FINAL_GGUF" ]; then
         echo "📥 下载官方基座 GGUF: $OFFICIAL_GGUF_URL"
-        curl -sL --fail --max-time 900 -o "${OUTPUT_DIR}/official-${HF_BASENAME}-Q8_0.gguf" "$OFFICIAL_GGUF_URL"
+        BASE_DOWNLOAD_PATH="${OUTPUT_DIR}/official-${HF_BASENAME}-Q8_0.gguf"
+        curl -sS -L --fail --max-time 900 -o "$BASE_DOWNLOAD_PATH" "$OFFICIAL_GGUF_URL"
+        if [ ! -s "$BASE_DOWNLOAD_PATH" ]; then
+            echo "❌ 官方 Base 下载为空，停止量化。"
+            rm -f "$BASE_DOWNLOAD_PATH"
+            exit 1
+        fi
         echo "⚙️ 重量化为 Q4_K_M..."
-        "$QUANTIZE_BIN" "${OUTPUT_DIR}/official-${HF_BASENAME}-Q8_0.gguf" "$FINAL_GGUF" Q4_K_M
-        rm -f "${OUTPUT_DIR}/official-${HF_BASENAME}-Q8_0.gguf"
+        "$QUANTIZE_BIN" "$BASE_DOWNLOAD_PATH" "$FINAL_GGUF" Q4_K_M
+        rm -f "$BASE_DOWNLOAD_PATH"
     fi
 elif [ "$ASSET_KIND" = "adapter" ]; then
     # adapter：任务专用 LoRA 训练（不合并），转 LoRA GGUF
