@@ -124,9 +124,15 @@ else
     MERGED_DIR="${OUTPUT_DIR}/merged-${TIER}-${TASK:-base}"
     F16_GGUF="${OUTPUT_DIR}/tmp-${TIER}-${TASK:-base}-f16.gguf"
     if [ "$ASSET_KIND" = "base" ]; then
-        # base：官方 GGUF Q8_0 → 重量化为 Q4_K_M（HF model id 推导 GGUF 仓库与文件名）
+        # base：官方 GGUF Q8_0 → 重量化为 Q4_K_M。保留 Hugging Face 命名空间：
+        # Qwen/Qwen3-0.6B -> Qwen/Qwen3-0.6B-GGUF，而不是错误的 Qwen3-0.6B-GGUF。
+        HF_NAMESPACE=$(dirname "$BASE_MODEL")
         HF_BASENAME=$(basename "$BASE_MODEL")
-        OFFICIAL_GGUF_URL="https://huggingface.co/${HF_BASENAME}-GGUF/resolve/main/${HF_BASENAME}-Q8_0.gguf"
+        if [ "$HF_NAMESPACE" = "." ]; then
+            echo "❌ --asset base 需要 Hugging Face 格式的基座 ID（例如 Qwen/Qwen3-0.6B）。"
+            exit 1
+        fi
+        OFFICIAL_GGUF_URL="https://huggingface.co/${HF_NAMESPACE}/${HF_BASENAME}-GGUF/resolve/main/${HF_BASENAME}-Q8_0.gguf"
         FINAL_GGUF="${OUTPUT_DIR}/${TIER}-base-${MODEL_FAMILY}-${PARAM_TAG}-${VERSION}-Q4_K_M.gguf"
     else
         # adapter：LoRA adapter GGUF（f16，精度优先）
