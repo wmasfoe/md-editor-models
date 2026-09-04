@@ -1,0 +1,100 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ChangelogSchema",
+  "description": "md-editor-models 更新日志机器契约规范 v1",
+  "type": "object",
+  "required": ["schemaVersion", "latestVersion", "releases"],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1,
+      "description": "契约版本号，固定为 1"
+    },
+    "latestVersion": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "最新版本号，严格等于 releases[0].version"
+    },
+    "releases": {
+      "type": "array",
+      "minItems": 1,
+      "description": "发布记录列表，按时间由新到旧降序排列",
+      "items": {
+        "type": "object",
+        "required": ["version", "date", "summary", "sections"],
+        "properties": {
+          "version": {
+            "type": "string",
+            "pattern": "^\\d+\\.\\d+\\.\\d+$",
+            "description": "语义化版本号，不带 v 前缀"
+          },
+          "date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "发布日期，格式 YYYY-MM-DD"
+          },
+          "impact": {
+            "type": "string",
+            "enum": ["major", "normal"],
+            "default": "normal",
+            "description": "更新重要程度级别"
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "description": "本次更新的核心摘要"
+          },
+          "sections": {
+            "type": "array",
+            "minItems": 1,
+            "description": "更新内容分组列表",
+            "items": {
+              "type": "object",
+              "required": ["title", "items"],
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "分组标题"
+                },
+                "items": {
+                  "type": "array",
+                  "minItems": 1,
+                  "description": "具体更新条目",
+                  "items": {
+                    "type": "object",
+                    "required": ["title", "description"],
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": ["feat", "perf", "fix", "refactor", "breaking", "other"],
+                        "description": "条目类型，缺省时表示无 Badge / 普通条目"
+                      },
+                      "title": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "条目标题"
+                      },
+                      "description": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "条目详细描述"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

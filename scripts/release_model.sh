@@ -53,6 +53,16 @@ if [ ! -w "$OUTPUT_DIR" ]; then
 fi
 
 # ------------------------------------------------------------------------------
+# 校验更新日志契约并确保当前版本已登记
+# ------------------------------------------------------------------------------
+if [ -f "changelog.json" ] && [ -f "scripts/changelog.py" ]; then
+    echo "📋 校验更新日志契约 (changelog.json)..."
+    $PY_CMD scripts/changelog.py validate
+    $PY_CMD scripts/changelog.py check-version --version "$VERSION"
+    $PY_CMD scripts/changelog.py generate
+fi
+
+# ------------------------------------------------------------------------------
 # 模型档位与元数据推断
 # ------------------------------------------------------------------------------
 MODEL_FAMILY="qwen3"
@@ -384,10 +394,15 @@ fi
 
 if [ "$HAS_GH_AUTH" = true ]; then
     echo "✨ 正在同步产物至 GitHub Releases (${REPO}@${VERSION})..."
+    CHANGELOG_NOTES=""
+    if [ -f "scripts/changelog.py" ]; then
+        CHANGELOG_NOTES=$($PY_CMD scripts/changelog.py get-notes --version "$VERSION" 2>/dev/null || true)
+    fi
+
     RELEASE_TITLE="md-editor SLM Models Matrix (${VERSION})"
     RELEASE_NOTES="### md-editor 专属端侧小模型矩阵 (${VERSION})
 
-支持多语种语法纠错 (Tuple JSON Diff)、排版标点规范化与极速行内 FIM 补全。
+${CHANGELOG_NOTES}
 
 #### 📋 客户端多模型 Manifest
 \`\`\`json
@@ -397,6 +412,7 @@ $(cat "$MANIFEST_FILE")
     if gh release view "$VERSION" --repo "$REPO" &> /dev/null; then
         echo "🔄 增量追加资产到已有 Release $VERSION..."
         gh release upload "$VERSION" "$FINAL_GGUF" --repo "$REPO" --clobber
+        [ -f "changelog.json" ] && gh release upload "$VERSION" "changelog.json" --repo "$REPO" --clobber
         # 以远端最新 manifest 为基线重新合并（当前本地只含本次资产，直接覆盖会丢 capabilities）
         gh release download "$VERSION" -p "manifest.json" -O "$MANIFEST_FILE" --repo "$REPO" --clobber || true
         $PY_CMD scripts/update_manifest.py "${MANIFEST_ARGS[@]}"
@@ -419,7 +435,9 @@ $(cat "$MANIFEST_FILE")
         gh release edit "$VERSION" --repo "$REPO" --draft=false 2>/dev/null || true
     else
         echo "✨ 创建全新 Release $VERSION..."
-        gh release create "$VERSION" "$FINAL_GGUF" "$MANIFEST_FILE" \
+        EXTRA_FILES=()
+        [ -f "changelog.json" ] && EXTRA_FILES+=("changelog.json")
+        gh release create "$VERSION" "$FINAL_GGUF" "$MANIFEST_FILE" "${EXTRA_FILES[@]}" \
           --repo "$REPO" \
           --title "$RELEASE_TITLE" \
           --notes "$RELEASE_NOTES"
