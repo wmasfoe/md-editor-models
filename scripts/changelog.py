@@ -108,11 +108,20 @@ def validate_changelog(data: dict) -> list[str]:
         if impact is not None and impact not in VALID_IMPACTS:
             errors.append(f"{prefix} impact 必须为 'major' 或 'normal'，当前为: {impact}")
 
-        # 8. sourcePr 校验（若存在必须为正整数）
-        source_pr = rel.get("sourcePr")
-        if source_pr is not None:
-            if not isinstance(source_pr, int) or isinstance(source_pr, bool) or source_pr <= 0:
-                errors.append(f"{prefix} sourcePr 必须为正整数（GitHub PR 编号），当前为: {source_pr}")
+        # 8. sourcePR 校验（若存在必须为包含正整数且无重复的数组）
+        source_prs = rel.get("sourcePR")
+        if source_prs is not None:
+            if not isinstance(source_prs, list) or len(source_prs) == 0:
+                errors.append(f"{prefix} sourcePR 必须为包含至少一个 PR 编号的非空数组，当前为: {source_prs}")
+            else:
+                seen_prs = set()
+                for pr_idx, pr_num in enumerate(source_prs):
+                    if not isinstance(pr_num, int) or isinstance(pr_num, bool) or pr_num <= 0:
+                        errors.append(f"{prefix} sourcePR[{pr_idx}] 必须为正整数（GitHub PR 编号），当前为: {pr_num}")
+                    elif pr_num in seen_prs:
+                        errors.append(f"{prefix} sourcePR 存在重复编号: {pr_num}")
+                    else:
+                        seen_prs.add(pr_num)
 
         # 9. summary 校验
         summary = rel.get("summary")
@@ -165,13 +174,13 @@ def generate_markdown(data: dict) -> str:
     for idx, rel in enumerate(data.get("releases", [])):
         version = rel["version"]
         date = rel["date"]
-        source_pr = rel.get("sourcePr")
+        source_prs = rel.get("sourcePR")
         summary = rel.get("summary", "").strip()
         sections = rel.get("sections", [])
 
-        if source_pr:
-            pr_link = f"[#{source_pr}](https://github.com/{GITHUB_REPO}/pull/{source_pr})"
-            lines.append(f"## {version} - {date} ({pr_link})")
+        if source_prs:
+            pr_links = ", ".join(f"[#{pr}](https://github.com/{GITHUB_REPO}/pull/{pr})" for pr in source_prs)
+            lines.append(f"## {version} - {date} ({pr_links})")
         else:
             lines.append(f"## {version} - {date}")
         lines.append("")
@@ -213,10 +222,10 @@ def get_version_notes(data: dict, target_version: str) -> str:
         return ""
 
     lines: list[str] = []
-    source_pr = target_rel.get("sourcePr")
-    if source_pr:
-        pr_link = f"[#{source_pr}](https://github.com/{GITHUB_REPO}/pull/{source_pr})"
-        lines.append(f"> 🔗 **关联 PR**: {pr_link}")
+    source_prs = target_rel.get("sourcePR")
+    if source_prs:
+        pr_links = ", ".join(f"[#{pr}](https://github.com/{GITHUB_REPO}/pull/{pr})" for pr in source_prs)
+        lines.append(f"> 🔗 **关联 PR**: {pr_links}")
         lines.append("")
 
     summary = target_rel.get("summary", "").strip()
@@ -300,14 +309,19 @@ def main():
         if not target_rel:
             print(f"❌ changelog.json 中尚未登记版本 {clean_ver}！发版前请先添加更新日志。", file=sys.stderr)
             sys.exit(1)
-        source_pr = target_rel.get("sourcePr")
-        if source_pr is None:
-            print(f"❌ 版本 {clean_ver} 缺少关联 PR (sourcePr)！发版契约要求新版本必须关联 PR 编号。", file=sys.stderr)
+        source_prs = target_rel.get("sourcePR")
+        if source_prs is None:
+            print(f"❌ 版本 {clean_ver} 缺少关联 PR (sourcePR)！发版契约要求新版本必须关联 PR 编号数组（例如 [1]）。", file=sys.stderr)
             sys.exit(1)
-        if not isinstance(source_pr, int) or isinstance(source_pr, bool) or source_pr <= 0:
-            print(f"❌ 版本 {clean_ver} 的 sourcePr 必须为正整数，当前为: {source_pr}", file=sys.stderr)
+        if not isinstance(source_prs, list) or len(source_prs) == 0:
+            print(f"❌ 版本 {clean_ver} 的 sourcePR 必须为非空正整数数组，当前为: {source_prs}", file=sys.stderr)
             sys.exit(1)
-        print(f"✅ 版本 {clean_ver} 已在 changelog.json 中就绪（关联 PR #{source_pr}）。")
+        for pr_num in source_prs:
+            if not isinstance(pr_num, int) or isinstance(pr_num, bool) or pr_num <= 0:
+                print(f"❌ 版本 {clean_ver} 的 sourcePR 列表中包含非法编号: {pr_num}", file=sys.stderr)
+                sys.exit(1)
+        pr_labels = ", ".join(f"#{pr}" for pr in source_prs)
+        print(f"✅ 版本 {clean_ver} 已在 changelog.json 中就绪（关联 PR {pr_labels}）。")
 
     elif args.command == "get-notes":
         notes = get_version_notes(data, args.version)

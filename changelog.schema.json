@@ -42,10 +42,15 @@
             "default": "normal",
             "description": "更新重要程度级别"
           },
-          "sourcePr": {
-            "type": "integer",
-            "minimum": 1,
-            "description": "关联的 GitHub Pull Request 编号（例如 1）"
+          "sourcePR": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "minItems": 1,
+            "uniqueItems": true,
+            "description": "关联的 GitHub Pull Request 编号列表（例如 [1, 2]）"
           },
           "summary": {
             "type": "string",
