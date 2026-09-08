@@ -32,6 +32,11 @@
               "type": "perf",
               "title": "客户端即插即用",
               "description": "输出长度精准对齐客户端 180 token 限制，客户端零改动即可无缝生效。"
+            },
+            {
+              "type": "fix",
+              "title": "Colab 训练环境兼容性修复",
+              "description": "解决 Google Colab 等环境中因预装旧版 torchao 导致 PEFT 抛出未捕获 ImportError 的已知问题。"
             }
           ]
         }

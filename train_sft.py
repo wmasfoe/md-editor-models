@@ -10,6 +10,25 @@ from transformers import (
 from peft import LoraConfig, get_peft_model, TaskType, PeftModel
 from trl import SFTTrainer, SFTConfig
 
+# 兼容性修复：解决部分环境（如 Google Colab）中预装旧版 torchao (<0.16.0) 导致 PEFT 抛出未捕获 ImportError 的已知问题
+def _patch_peft_torchao():
+    try:
+        import peft.import_utils
+        _orig_func = getattr(peft.import_utils, "is_torchao_available", None)
+        if _orig_func is not None:
+            def _safe_is_torchao_available():
+                try:
+                    return _orig_func()
+                except ImportError:
+                    return False
+            peft.import_utils.is_torchao_available = _safe_is_torchao_available
+            if hasattr(peft, "tuners") and hasattr(peft.tuners, "lora") and hasattr(peft.tuners.lora, "torchao"):
+                peft.tuners.lora.torchao.is_torchao_available = _safe_is_torchao_available
+    except Exception:
+        pass
+
+_patch_peft_torchao()
+
 # RFC-002 专属全集控制符（作为 Special Tokens 固化进词表）
 SPECIAL_TOKENS = [
     "<|task_distill|>",

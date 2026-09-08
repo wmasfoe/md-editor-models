@@ -4,6 +4,25 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
+# 兼容性修复：解决部分环境（如 Google Colab）中预装旧版 torchao (<0.16.0) 导致 PEFT 抛出未捕获 ImportError 的已知问题
+def _patch_peft_torchao():
+    try:
+        import peft.import_utils
+        _orig_func = getattr(peft.import_utils, "is_torchao_available", None)
+        if _orig_func is not None:
+            def _safe_is_torchao_available():
+                try:
+                    return _orig_func()
+                except ImportError:
+                    return False
+            peft.import_utils.is_torchao_available = _safe_is_torchao_available
+            if hasattr(peft, "tuners") and hasattr(peft.tuners, "lora") and hasattr(peft.tuners.lora, "torchao"):
+                peft.tuners.lora.torchao.is_torchao_available = _safe_is_torchao_available
+    except Exception:
+        pass
+
+_patch_peft_torchao()
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate RFC-002 model output adherence (Tuple JSON Diff & FIM & Distill)")
     parser.add_argument("--model_path", type=str, default="Qwen/Qwen2.5-0.5B-Instruct", help="Path to base model or merged model")

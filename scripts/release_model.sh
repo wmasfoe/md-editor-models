@@ -54,6 +54,17 @@ if [ ! -w "$OUTPUT_DIR" ]; then
     exit 1
 fi
 
+# 自动检测并规避与 PEFT 不兼容的旧版 torchao (<0.16.0，如 Colab 默认预装)
+if $PY_CMD -c "
+import importlib.metadata
+from packaging.version import parse
+v = parse(importlib.metadata.version('torchao'))
+assert v < parse('0.16.0')
+" 2>/dev/null; then
+    echo "⚠️ 检测到与 PEFT 不兼容的旧版 torchao，正在自动卸载以防 LoRA 初始化中断..."
+    $PY_CMD -m pip uninstall -y torchao 2>/dev/null || true
+fi
+
 # ------------------------------------------------------------------------------
 # 校验更新日志契约并确保当前版本已登记
 # ------------------------------------------------------------------------------
