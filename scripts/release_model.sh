@@ -20,12 +20,14 @@ BASE_MODEL=${2:-"Qwen/Qwen3-0.6B"}
 ASSET_KIND="legacy-model"
 TASK=""
 TIER=""
+REBUILD_DATA=0
 shift 2 2>/dev/null || true
 while [ $# -gt 0 ]; do
   case "$1" in
     --asset) ASSET_KIND="$2"; shift 2;;
     --task) TASK="$2"; shift 2;;
     --tier) TIER="$2"; shift 2;;
+    --rebuild-data) REBUILD_DATA=1; shift 1;;
     *) echo "❌ 未知参数: $1"; exit 1;;
   esac
 done
@@ -253,8 +255,8 @@ elif [ "$ASSET_KIND" = "adapter" ]; then
             rm -rf "$LORA_DIR"
         fi
         if [ ! -d "$LORA_DIR" ] || [ ! -f "$LORA_DIR/adapter_model.safetensors" ]; then
-            if [ ! -f "data/train.jsonl" ]; then
-                echo "📊 正在自动构建 RFC-003 数据集..."
+            if [ "$REBUILD_DATA" = "1" ] || [ ! -f "data/train.jsonl" ]; then
+                echo "📊 正在自动构建 100% 真实长文与高密度实体平衡数据集..."
                 $PY_CMD scripts/build_dataset.py
             fi
             $PY_CMD train_sft.py \

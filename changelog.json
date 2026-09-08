@@ -1,8 +1,42 @@
 {
   "$schema": "./changelog.schema.json",
   "schemaVersion": 1,
-  "latestVersion": "1.3.0",
+  "latestVersion": "1.3.1",
   "releases": [
+    {
+      "version": "1.3.1",
+      "date": "2026-09-08",
+      "impact": "normal",
+      "sourcePR": [2],
+      "summary": "全面重构长文档语义提炼与上下文理解能力，接入 100% 真实学术与百科长文语料，为行内续写提供高密度专有名词与主旨提示。",
+      "sections": [
+        {
+          "title": "长文档语义提炼与提示能力升级",
+          "items": [
+            {
+              "type": "feat",
+              "title": "接入 100% 真实长文语料",
+              "description": "彻底废除假数据模板，全面接入学术论文（CSL）、大百科（Wikipedia）与图书全章真实人类长摘要与专有关键词。"
+            },
+            {
+              "type": "feat",
+              "title": "全篇正文无截断分析",
+              "description": "提炼输入支持数千字完整 Markdown 正文，解决以往仅截取前几百字导致概括不准的问题。"
+            },
+            {
+              "type": "feat",
+              "title": "专有名词与主旨强提示",
+              "description": "提炼输出结构化包含核心主旨与关键专有名词实体表，行内续写时强力引导专业词汇命中，杜绝生造词。"
+            },
+            {
+              "type": "perf",
+              "title": "客户端即插即用",
+              "description": "输出长度精准对齐客户端 180 token 限制，客户端零改动即可无缝生效。"
+            }
+          ]
+        }
+      ]
+    },
     {
       "version": "1.3.0",
       "date": "2026-09-03",

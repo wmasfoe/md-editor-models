@@ -77,9 +77,15 @@ def main():
             valid_format_count += 1
             print("  ✅ FIM 补全输出正常")
         elif "<|task_distill|>" in user_msg:
-            # 文档提炼任务
-            valid_format_count += 1
-            print("  ✅ 文档提炼输出正常")
+            # 文档提炼任务：检验是否具备真实主旨或专有名词实体
+            if len(response_text) >= 50 and ("【核心主旨】" in response_text or "【关键专有名词与实体】" in response_text or "主旨" in response_text):
+                valid_format_count += 1
+                print(f"  ✅ 高密度结构化提炼输出正常 (长度: {len(response_text)} 字)")
+            elif len(response_text) >= 30:
+                valid_format_count += 1
+                print(f"  ⚠️ 提炼输出有效，但未包含标准结构化标签 (长度: {len(response_text)} 字)")
+            else:
+                print(f"  ❌ 提炼输出过短或为空 (长度: {len(response_text)} 字)")
         else:
             # GEC / Punctuation / Preserve 任务 -> 校验元组 JSON
             try:
