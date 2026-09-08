@@ -10,6 +10,25 @@ from transformers import (
 from peft import LoraConfig, get_peft_model, TaskType, PeftModel
 from trl import SFTTrainer, SFTConfig
 
+# 兼容性修复：解决部分环境（如 Google Colab）中预装旧版 torchao (<0.16.0) 导致 PEFT 抛出未捕获 ImportError 的已知问题
+def _patch_peft_torchao():
+    try:
+        import peft.import_utils
+        _orig_func = getattr(peft.import_utils, "is_torchao_available", None)
+        if _orig_func is not None:
+            def _safe_is_torchao_available():
+                try:
+                    return _orig_func()
+                except ImportError:
+                    return False
+            peft.import_utils.is_torchao_available = _safe_is_torchao_available
+            if hasattr(peft, "tuners") and hasattr(peft.tuners, "lora") and hasattr(peft.tuners.lora, "torchao"):
+                peft.tuners.lora.torchao.is_torchao_available = _safe_is_torchao_available
+    except Exception:
+        pass
+
+_patch_peft_torchao()
+
 # RFC-002 专属全集控制符（作为 Special Tokens 固化进词表）
 SPECIAL_TOKENS = [
     "<|task_distill|>",
@@ -30,22 +49,22 @@ SPECIAL_TOKENS = [
 ]
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Fine-tune Qwen2.5 on Markdown SLM dataset with RFC-002 tokens and LoRA")
+    parser = argparse.ArgumentParser(description="Fine-tune Qwen3 on Markdown SLM dataset with RFC-002 tokens and LoRA")
     
-    # 模型与数据路径
+    # 模型与数据路径 (支持 Qwen/Qwen3-0.6B 与 Qwen/Qwen3-1.7B)
     parser.add_argument("--model_name_or_path", type=str, default="Qwen/Qwen3-0.6B", help="Base model identifier or local path")
     parser.add_argument("--train_file", type=str, default="data/train.jsonl", help="Path to training jsonl file")
     parser.add_argument("--task", type=str, default="multi", choices=["multi", "gec", "completion", "distill", "style-analysis"], help="Task profile for this adapter")
     parser.add_argument("--adapter_id", type=str, default="", help="Stable adapter identifier")
     parser.add_argument("--val_file", type=str, default="data/val.jsonl", help="Path to validation jsonl file")
-    parser.add_argument("--output_dir", type=str, default="output/qwen-0.5b-editor-lora", help="Directory to save LoRA checkpoints")
+    parser.add_argument("--output_dir", type=str, default="output/qwen3-editor-lora", help="Directory to save LoRA checkpoints")
     
-    # 训练超参数 (针对 L4 / 现代 GPU 高吞吐优化)
+    # 训练超参数 (针对 L4 / A100 现代 GPU 高吞吐优化)
     parser.add_argument("--num_train_epochs", type=int, default=2, help="Total training epochs (2 for optimal LoRA convergence)")
     parser.add_argument("--batch_size", type=int, default=64, help="Per-device batch size (64 for A100)")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
     parser.add_argument("--learning_rate", type=float, default=2e-4, help="Initial learning rate")
-    parser.add_argument("--max_seq_length", type=int, default=768, help="Maximum sequence length (768 for multi-scale context)")
+    parser.add_argument("--max_seq_length", type=int, default=1536, help="Maximum sequence length (1536 for full article context)")
     parser.add_argument("--warmup_steps", type=int, default=30, help="Warmup steps")
     parser.add_argument("--logging_steps", type=int, default=20, help="Log metrics every N steps")
     
