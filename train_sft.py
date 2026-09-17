@@ -178,6 +178,35 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # 3.1 为 Gemma 等模型注入 training-compatible chat template (含 TRL {% generation %} 标记)
+    if args.assistant_only_loss:
+        if "gemma" in args.model_name_or_path.lower() or (tokenizer.chat_template and "<start_of_turn>" in tokenizer.chat_template):
+            gemma_train_template = (
+                "{{ bos_token }}"
+                "{% for message in messages %}"
+                "{% if message['role'] == 'user' %}"
+                "{{ '<start_of_turn>user\n' + message['content'] | trim + '<end_of_turn>\n' }}"
+                "{% elif message['role'] == 'assistant' or message['role'] == 'model' %}"
+                "{{ '<start_of_turn>model\n' }}"
+                "{% generation %}"
+                "{{ message['content'] | trim + '<end_of_turn>\n' }}"
+                "{% endgeneration %}"
+                "{% endif %}"
+                "{% endfor %}"
+                "{% if add_generation_prompt %}"
+                "{{ '<start_of_turn>model\n' }}"
+                "{% endif %}"
+            )
+            tokenizer.chat_template = gemma_train_template
+            print("✨ 为 Gemma 架构注入 training-compatible chat template (已启用 {% generation %} 助手掩码标记)")
+        elif tokenizer.chat_template and "{% generation %}" not in tokenizer.chat_template:
+            try:
+                from trl.chat_template_utils import add_generation_tags
+                tokenizer = add_generation_tags(tokenizer)
+                print("✨ 自动调用 add_generation_tags 补齐 {% generation %} 助手掩码标记")
+            except Exception as e:
+                print(f"ℹ️ add_generation_tags 提示: {e}")
+
     # 任务控制符按训练模式区分处理：
     # - multi（legacy 完整模型）：注册为特殊 Token 并扩展词表，保持 v1.1 兼容语义
     # - 单任务 Adapter：不注册 Token。<|task_*|> 作为普通文本参与训练（客户端 prompt
@@ -270,15 +299,30 @@ def main():
         report_to="none"
     )
 
-    # 7. 实例化 Trainer 并启动训练
-    trainer = SFTTrainer(
-        model=model,
-        args=sft_config,
-        train_dataset=dataset["train"],
-        eval_dataset=dataset["validation"] if has_valid_eval else None,
-        peft_config=peft_config,
-        processing_class=tokenizer
-    )
+    # 7. 实例化 Trainer 并启动训练 (增加对模板兼容性的自动降级防御)
+    try:
+        trainer = SFTTrainer(
+            model=model,
+            args=sft_config,
+            train_dataset=dataset["train"],
+            eval_dataset=dataset["validation"] if has_valid_eval else None,
+            peft_config=peft_config,
+            processing_class=tokenizer
+        )
+    except Exception as e:
+        if "chat template" in str(e).lower() or "generation" in str(e).lower() or "prefix-preservation" in str(e).lower():
+            print(f"⚠️ 捕获到 Chat Template 兼容性异常: {e}，自动降级至标准 SFT 模式继续训练...")
+            sft_config.assistant_only_loss = False
+            trainer = SFTTrainer(
+                model=model,
+                args=sft_config,
+                train_dataset=dataset["train"],
+                eval_dataset=dataset["validation"] if has_valid_eval else None,
+                peft_config=peft_config,
+                processing_class=tokenizer
+            )
+        else:
+            raise e
 
     # 自动检测检查点以支持中断续训
     last_checkpoint = None
