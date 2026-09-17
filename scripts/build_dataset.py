@@ -310,7 +310,7 @@ def build_dataset_rfc003(mode="standard", max_samples=None, train_out="data/trai
     
     # 2.1 中文真实 CSC 语法纠错库
     csc_count = 0
-    csc_limit = 200 if mode == "tiny-format" else 20000
+    csc_limit = min(600, max_samples) if mode == "tiny-format" else 20000
     try:
         ds_csc = load_dataset('shibing624/CSC', split='train', streaming=True)
         for row in ds_csc.take(csc_limit):
@@ -346,7 +346,7 @@ def build_dataset_rfc003(mode="standard", max_samples=None, train_out="data/trai
         ("微服务 archetecture 演进：", "微服务 architecture 演进："),
         ("数据库 configration 如下：", "数据库 configuration 如下：")
     ]
-    draft_multiplier = 1 if mode == "tiny-format" else 20
+    draft_multiplier = 4 if mode == "tiny-format" else 20
     draft_templates = raw_draft_templates * draft_multiplier
 
     for orig, corr in draft_templates:
@@ -357,7 +357,7 @@ def build_dataset_rfc003(mode="standard", max_samples=None, train_out="data/trai
             samples.append({"messages": [{"role": "user", "content": f"<|task_gec_zh|>{orig}"}, {"role": "assistant", "content": diff}]})
 
     # 2.3 中英文混排与拼音同音词注入
-    article_limit = 120 if mode == "tiny-format" else 8000
+    article_limit = 250 if mode == "tiny-format" else 8000
     for article in real_articles[:article_limit]:
         text_chunk = article['text'][:180].strip()
         if len(text_chunk) < 20:

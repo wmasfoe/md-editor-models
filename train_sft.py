@@ -274,8 +274,38 @@ def main():
         bias="none"
     )
 
-    # 6. 配置 SFTTrainer 训练参数 (按 Epoch 评测与保存，消除空转开销，启用助手回答专属 Loss 掩码)
+    # 6. 配置 SFTTrainer 训练参数与 Assistant-Only Loss
     has_valid_eval = "validation" in dataset and len(dataset["validation"]) > 0
+
+    data_collator = None
+    dataset_text_field = None
+    use_completion_collator = False
+
+    if args.assistant_only_loss:
+        try:
+            from trl import DataCollatorForCompletionOnlyLM
+            if "gemma" in args.model_name_or_path.lower() or (tokenizer.chat_template and "<start_of_turn>" in tokenizer.chat_template):
+                response_template = "<start_of_turn>model\n"
+            else:
+                response_template = "<|im_start|>assistant\n"
+
+            def format_prompts(batch):
+                return {"text": [tokenizer.apply_chat_template(m, tokenize=False) for m in batch["messages"]]}
+
+            dataset["train"] = dataset["train"].map(format_prompts, batched=True, desc="Formatting train chat template")
+            if has_valid_eval:
+                dataset["validation"] = dataset["validation"].map(format_prompts, batched=True, desc="Formatting val chat template")
+
+            data_collator = DataCollatorForCompletionOnlyLM(
+                response_template=response_template,
+                tokenizer=tokenizer
+            )
+            dataset_text_field = "text"
+            use_completion_collator = True
+            print(f"✨ 启用 DataCollatorForCompletionOnlyLM (响应标记: {repr(response_template)})，实现精确助手 Loss 掩码。")
+        except Exception as e:
+            print(f"ℹ️ Completion collator 初始化提示: {e}，将采用标准 SFTConfig 模式。")
+
     sft_config = SFTConfig(
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
@@ -293,34 +323,35 @@ def main():
         fp16=torch.cuda.is_available() and not torch.cuda.is_bf16_supported(),
         lr_scheduler_type="cosine",
         max_length=args.max_seq_length,
-        assistant_only_loss=args.assistant_only_loss,
+        assistant_only_loss=args.assistant_only_loss if not use_completion_collator else False,
         dataloader_num_workers=min(4, os.cpu_count()) if os.cpu_count() else 0,
         dataloader_pin_memory=True if torch.cuda.is_available() else False,
         report_to="none"
     )
 
-    # 7. 实例化 Trainer 并启动训练 (增加对模板兼容性的自动降级防御)
+    # 7. 实例化 Trainer 并启动训练
+    trainer_kwargs = {
+        "model": model,
+        "args": sft_config,
+        "train_dataset": dataset["train"],
+        "eval_dataset": dataset["validation"] if has_valid_eval else None,
+        "peft_config": peft_config,
+        "processing_class": tokenizer,
+    }
+    if data_collator is not None:
+        trainer_kwargs["data_collator"] = data_collator
+    if dataset_text_field is not None:
+        trainer_kwargs["dataset_text_field"] = dataset_text_field
+
     try:
-        trainer = SFTTrainer(
-            model=model,
-            args=sft_config,
-            train_dataset=dataset["train"],
-            eval_dataset=dataset["validation"] if has_valid_eval else None,
-            peft_config=peft_config,
-            processing_class=tokenizer
-        )
+        trainer = SFTTrainer(**trainer_kwargs)
     except Exception as e:
         if "chat template" in str(e).lower() or "generation" in str(e).lower() or "prefix-preservation" in str(e).lower():
             print(f"⚠️ 捕获到 Chat Template 兼容性异常: {e}，自动降级至标准 SFT 模式继续训练...")
             sft_config.assistant_only_loss = False
-            trainer = SFTTrainer(
-                model=model,
-                args=sft_config,
-                train_dataset=dataset["train"],
-                eval_dataset=dataset["validation"] if has_valid_eval else None,
-                peft_config=peft_config,
-                processing_class=tokenizer
-            )
+            trainer_kwargs.pop("data_collator", None)
+            trainer_kwargs.pop("dataset_text_field", None)
+            trainer = SFTTrainer(**trainer_kwargs)
         else:
             raise e
 
@@ -331,6 +362,10 @@ def main():
         last_checkpoint = get_last_checkpoint(args.output_dir)
         if last_checkpoint is not None:
             print(f"🔄 发现可用检查点: {last_checkpoint}，自动接续训练...")
+
+    print("\n📊 LoRA 可训练参数分布:")
+    if hasattr(trainer.model, "print_trainable_parameters"):
+        trainer.model.print_trainable_parameters()
 
     print("\n🔥 Starting training...")
     trainer.train(resume_from_checkpoint=last_checkpoint)
