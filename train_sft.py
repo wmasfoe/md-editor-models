@@ -19,7 +19,7 @@ def _patch_peft_torchao():
             def _safe_is_torchao_available():
                 try:
                     return _orig_func()
-                except ImportError:
+                except Exception:
                     return False
             peft.import_utils.is_torchao_available = _safe_is_torchao_available
             if hasattr(peft, "tuners") and hasattr(peft.tuners, "lora") and hasattr(peft.tuners.lora, "torchao"):
