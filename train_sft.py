@@ -29,20 +29,7 @@ def _patch_peft_torchao():
 
 _patch_peft_torchao()
 
-def _patch_peft_gemma4():
-    """兼容性修复：适配 Gemma 4 多模态模型中的 Gemma4ClippableLinear 封装层"""
-    try:
-        import peft.tuners.lora.model as lora_module
-        orig_create_new_module = lora_module.LoraModel._create_new_module
-        def _safe_create_new_module(self, lora_config, adapter_name, target, **kwargs):
-            if target.__class__.__name__ == "Gemma4ClippableLinear" and hasattr(target, "linear"):
-                return orig_create_new_module(self, lora_config, adapter_name, target.linear, **kwargs)
-            return orig_create_new_module(self, lora_config, adapter_name, target, **kwargs)
-        lora_module.LoraModel._create_new_module = _safe_create_new_module
-    except Exception:
-        pass
 
-_patch_peft_gemma4()
 
 def materialize_meta_tensors(model, device):
     """确保模型中所有遗留在 meta 上的非持久化缓冲区和参数（如 Gemma 4 架构特性）被物化到目标设备"""
