@@ -29,6 +29,23 @@ def _patch_peft_torchao():
 
 _patch_peft_torchao()
 
+def materialize_meta_tensors(model, device):
+    """确保模型中所有遗留在 meta 上的非持久化缓冲区和参数（如 Gemma 4 架构特性）被物化到目标设备"""
+    if device is None:
+        return
+    for name, buf in model.named_buffers():
+        if getattr(buf, "is_meta", False):
+            parent_name, buf_name = name.rsplit(".", 1) if "." in name else ("", name)
+            parent = model.get_submodule(parent_name) if parent_name else model
+            parent.register_buffer(buf_name, torch.zeros(buf.shape, dtype=buf.dtype, device=device), persistent=False)
+
+    for name, param in model.named_parameters():
+        if getattr(param, "is_meta", False):
+            parent_name, param_name = name.rsplit(".", 1) if "." in name else ("", name)
+            parent = model.get_submodule(parent_name) if parent_name else model
+            parent.register_parameter(param_name, torch.nn.Parameter(torch.zeros(param.shape, dtype=param.dtype, device=device)))
+
+
 # RFC-002 专属全集控制符（作为 Special Tokens 固化进词表）
 SPECIAL_TOKENS = [
     "<|task_distill|>",
@@ -194,6 +211,10 @@ def main():
         trust_remote_code=True
     )
 
+    # 🛡️ 鲁棒性防线：自动检测并物化任何遗留在 meta 上的非持久化缓冲区与参数（如 Gemma 4 架构特性）
+    target_device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+    materialize_meta_tensors(model, target_device)
+
     # 若添加了新 token，扩充 embedding 层
     if num_added > 0:
         model.resize_token_embeddings(len(tokenizer))
@@ -213,6 +234,7 @@ def main():
     )
 
     # 6. 配置 SFTTrainer 训练参数 (按 Epoch 评测与保存，消除空转开销，启用助手回答专属 Loss 掩码)
+    has_valid_eval = "validation" in dataset and len(dataset["validation"]) > 0
     sft_config = SFTConfig(
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
@@ -225,7 +247,7 @@ def main():
         logging_steps=args.logging_steps,
         save_strategy="epoch",
         save_total_limit=2,
-        eval_strategy="epoch" if "validation" in dataset else "no",
+        eval_strategy="epoch" if has_valid_eval else "no",
         bf16=torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
         fp16=torch.cuda.is_available() and not torch.cuda.is_bf16_supported(),
         lr_scheduler_type="cosine",
@@ -241,7 +263,7 @@ def main():
         model=model,
         args=sft_config,
         train_dataset=dataset["train"],
-        eval_dataset=dataset.get("validation", None),
+        eval_dataset=dataset["validation"] if has_valid_eval else None,
         peft_config=peft_config,
         processing_class=tokenizer
     )
@@ -277,6 +299,7 @@ def main():
             device_map="auto" if torch.cuda.is_available() else "cpu",
             trust_remote_code=True
         )
+        materialize_meta_tensors(base_model, target_device)
         if num_added > 0:
             base_model.resize_token_embeddings(len(tokenizer))
             

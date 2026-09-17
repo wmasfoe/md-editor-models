@@ -286,9 +286,12 @@ elif [ "$ASSET_KIND" = "adapter" ]; then
               --num_train_epochs 2 \
               --batch_size $BATCH_SIZE \
               --gradient_accumulation_steps $GRAD_ACCUM \
-              --learning_rate 2e-4 \
-              --lora_r 32 \
-              --lora_alpha 64
+              --learning_rate 1e-4 \
+              --lora_r 8 \
+              --lora_alpha 16 \
+              --weight_decay 0.01 \
+              --lora_dropout 0.1 \
+              --assistant_only_loss
             echo "✅ 任务专用 LoRA 训练完成: $LORA_DIR"
         else
             echo "✨ 复用已训练 Adapter: $LORA_DIR"
@@ -316,9 +319,12 @@ else
           --num_train_epochs 2 \
           --batch_size $BATCH_SIZE \
           --gradient_accumulation_steps $GRAD_ACCUM \
-          --learning_rate 2e-4 \
-          --lora_r 32 \
-          --lora_alpha 64 \
+          --learning_rate 1e-4 \
+          --lora_r 8 \
+          --lora_alpha 16 \
+          --weight_decay 0.01 \
+          --lora_dropout 0.1 \
+          --assistant_only_loss \
           --merge_and_save \
           --merged_output_dir "$MERGED_DIR"
         echo "✅ SFT 训练与模型合并完成: $MERGED_DIR"
