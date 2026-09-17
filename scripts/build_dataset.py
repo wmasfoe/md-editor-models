@@ -3,6 +3,7 @@ import random
 import os
 import re
 import difflib
+import argparse
 from datasets import load_dataset
 import pangu
 
@@ -168,10 +169,10 @@ def extract_markdown_outline_and_title(text):
     outline = " > ".join(headings[:3]) if headings else "1. 引言 > 2. 核心内容 > 3. 总结"
     return title, outline
 
-def build_dataset_rfc003():
+def build_dataset_rfc003(mode="standard", max_samples=None, train_out="data/train.jsonl", val_out="data/val.jsonl"):
     samples = []
     print("=" * 70)
-    print("🚀 开始流式构建 RFC-003 「100% 真实长文提炼与高密度实体增强」平衡数据集")
+    print(f"🚀 开始流式构建 RFC-003 数据集 (模式: {mode}, 样本上限: {max_samples or '不限'})")
     print("=" * 70)
 
     # --------------------------------------------------------------------------
@@ -295,15 +296,16 @@ def build_dataset_rfc003():
     print(f"✅ 成功加载 {len(real_articles)} 篇 100% 真实人类多领域长文章（含人类撰写摘要与实体词表）！")
 
     # --------------------------------------------------------------------------
-    # 2. 构建任务 1: <|task_gec_zh|> & <|task_gec_mixed|> (大幅扩容至 25,000+ 条，占比 45%)
+    # 2. 构建任务 1: <|task_gec_zh|> & <|task_gec_mixed|>
     # --------------------------------------------------------------------------
     print("🔥 [2/5] 构建中文与中英混排专项 GEC (注入草稿短句、未完结从句与拼音输入法扰动)...")
     
-    # 2.1 中文真实 CSC 语法纠错库 (扩容至 20,000 条)
+    # 2.1 中文真实 CSC 语法纠错库
     csc_count = 0
+    csc_limit = 200 if mode == "tiny-format" else 20000
     try:
         ds_csc = load_dataset('shibing624/CSC', split='train', streaming=True)
-        for row in ds_csc.take(20000):
+        for row in ds_csc.take(csc_limit):
             orig, corr = row['original_text'], row['correct_text']
             if orig == corr:
                 samples.append({"messages": [{"role": "user", "content": f"<|task_gec_zh|>{orig}"}, {"role": "assistant", "content": "[]"}]})
@@ -316,7 +318,7 @@ def build_dataset_rfc003():
 
     # 2.2 🌟 核心升级：构建「5~15字草稿短句与未完结片段」(末尾带冒号、破折号、逗号)
     print("✨ 注入草稿短句与末尾冒号/从句纠错切片...")
-    draft_templates = [
+    raw_draft_templates = [
         ("那下一步因该是：", "那下一步应该是："),
         ("那下一步瀛该是：", "那下一步应该是："),
         ("总结如下——", "总结如下——"),
@@ -332,11 +334,12 @@ def build_dataset_rfc003():
         ("请注意以下几点事相——", "请注意以下几点事项——"),
         ("我们必需在今天完成：", "我们必须在今天完成："),
         ("接口调用的 paramater 配置：", "接口调用的 parameter 配置："),
-        ("接口调用的 paramater 配置：", "接口调用的 parameter 配置："),
         ("调用 Tauri 的 inovke 方法：", "调用 Tauri 的 invoke 方法："),
         ("微服务 archetecture 演进：", "微服务 architecture 演进："),
         ("数据库 configration 如下：", "数据库 configuration 如下：")
-    ] * 250
+    ]
+    draft_multiplier = 1 if mode == "tiny-format" else 20
+    draft_templates = raw_draft_templates * draft_multiplier
 
     for orig, corr in draft_templates:
         if orig == corr:
@@ -346,7 +349,8 @@ def build_dataset_rfc003():
             samples.append({"messages": [{"role": "user", "content": f"<|task_gec_zh|>{orig}"}, {"role": "assistant", "content": diff}]})
 
     # 2.3 中英文混排与拼音同音词注入
-    for article in real_articles[:8000]:
+    article_limit = 120 if mode == "tiny-format" else 8000
+    for article in real_articles[:article_limit]:
         text_chunk = article['text'][:180].strip()
         if len(text_chunk) < 20:
             continue
@@ -361,7 +365,7 @@ def build_dataset_rfc003():
                 ]
             })
         else:
-            # 30% 负样本 (正确文本输出 [])
+            # 40% 真实无错负样本 (正确文本输出 [])
             samples.append({
                 "messages": [
                     {"role": "user", "content": f"<|task_gec_mixed|>{pangu_clean}"},
@@ -370,14 +374,16 @@ def build_dataset_rfc003():
             })
 
     # 2.4 🛡️ 专业技术术语假阳性压制负样本 (Hard Negatives)
-    tech_terms_clean = [
+    raw_tech_terms = [
         "我们在项目中使用了 LoRA 微调和 Q4_K_M 量化的 GGUF 模型。",
         "Tauri 2.0 结合 React 18 带来了极致的端侧启动体验。",
         "PyTorch 2.x 的 SDPA 注意力机制可以显著降低显存开销。",
         "利用 llama.cpp 的 prefix slot cache 技术实现首字低延迟。",
         "该系统基于 Spring Boot 3 和 Next.js 构建前后端分离架构。",
         "推荐在 CI/CD 流水线中集成 Code Review 与单元测试。"
-    ] * 300
+    ]
+    tech_multiplier = 1 if mode == "tiny-format" else 25
+    tech_terms_clean = raw_tech_terms * tech_multiplier
     for term_sentence in tech_terms_clean:
         samples.append({
             "messages": [
@@ -387,10 +393,11 @@ def build_dataset_rfc003():
         })
 
     # --------------------------------------------------------------------------
-    # 3. 构建任务 2: <|task_distill|> 100% 真实长文语义提炼与高密度实体抽取 (15%)
+    # 3. 构建任务 2: <|task_distill|> 100% 真实长文语义提炼与高密度实体抽取
     # --------------------------------------------------------------------------
     print("📝 [3/5] 构建 100% 真实全篇长文语义提炼与高密度实体抽取样本 (<|task_distill|>)...")
-    for article in real_articles[:5000]:
+    distill_limit = 50 if mode == "tiny-format" else 5000
+    for article in real_articles[:distill_limit]:
         title = article.get("title", "未命名文档")
         outline = article.get("outline", "1. 概述与背景 > 2. 核心原理 > 3. 应用实践")
         full_text = article["text"].strip()
@@ -398,8 +405,6 @@ def build_dataset_rfc003():
         keywords_list = article.get("keywords", [])
         keywords_str = "、".join(keywords_list) if keywords_list else title
         
-        # 严格对齐客户端 slm-protocol.ts 单次全篇直投输入规范:
-        # TASK_DISTILL + 【文档标题】 + 【章节大纲】 + 【正文内容】
         distill_prompt = (
             f"<|task_distill|>\n"
             f"【文档标题】{title}\n"
@@ -407,13 +412,10 @@ def build_dataset_rfc003():
             f"【正文内容】\n"
             f"{full_text}"
         )
-        
-        # 100% 真实人类撰写主旨 + 真实学者/文献专有名词列表 (130~165 Tokens，高度凝练，严格在客户端 180 token 限制内)
         distill_target = (
             f"【核心主旨】\n{real_summary}\n\n"
             f"【关键专有名词与实体】\n{keywords_str}"
         )
-        
         samples.append({
             "messages": [
                 {"role": "user", "content": distill_prompt},
@@ -422,10 +424,11 @@ def build_dataset_rfc003():
         })
 
     # --------------------------------------------------------------------------
-    # 4. 构建任务 3: <|task_completion|> 多尺度动态窗口 FIM (40%)
+    # 4. 构建任务 3: <|task_completion|> 多尺度动态窗口 FIM
     # --------------------------------------------------------------------------
     print("⚡ [4/5] 构建 ChatML System Document Context + 多尺度动态窗口 PSM FIM 续写...")
-    for article in real_articles[:15000]:
+    fim_limit = 60 if mode == "tiny-format" else 15000
+    for article in real_articles[:fim_limit]:
         raw = article['text']
         if len(raw) < 80:
             continue
@@ -476,22 +479,23 @@ def build_dataset_rfc003():
         })
 
     # --------------------------------------------------------------------------
-    # 5. 格式保真与标点排版样本 (3%)
+    # 5. 格式保真与标点排版样本
     # --------------------------------------------------------------------------
     print("🛡️ [5/5] 构建标点排版 (<|task_punc|>) 与格式保真样本 (<|task_preserve|>)...")
-    preserves = [
+    raw_preserves = [
         "$$E = mc^2$$",
         "$$\\int_{-\\infty}^{+\\infty} e^{-x^2} dx = \\sqrt{\\pi}$$",
         "---\ntitle: Doc\nauthor: Me\n---",
         "| 参数 | 类型 | 说明 |\n|---|---|---|\n| id | string | 唯一标识 |",
         "```rust\nfn main() {\n    println!(\"Hello, world!\");\n}\n```"
-    ] * 200
+    ]
+    preserve_multiplier = 2 if mode == "tiny-format" else 20
+    preserves = raw_preserves * preserve_multiplier
     for p in preserves:
         samples.append({"messages": [{"role": "user", "content": f"<|task_preserve|>{p}"}, {"role": "assistant", "content": "[]"}]})
 
     # 打乱并切分数据集 (90% 训练集, 10% 验证集)
-    # 质量门禁：固定模板/硬负样本被放大重复后，同一文本最多保留 MAX_DUP 份，避免模型背诵样本。
-    MAX_DUP = 10
+    MAX_DUP = 2 if mode == "tiny-format" else 10
     print(f"\n🧹 去重前样本数: {len(samples)}（重复上限每文本 {MAX_DUP} 条）")
     seen_counts = {}
     deduped = []
@@ -506,9 +510,13 @@ def build_dataset_rfc003():
     samples = deduped
     print(f"🧹 去重后样本数: {len(samples)}（移除 {removed} 条重复）")
 
+    if max_samples and len(samples) > max_samples:
+        random.seed(42)
+        random.shuffle(samples)
+        samples = samples[:max_samples]
+        print(f"✂️ 限制样本上限: 保留 {len(samples)} 条极高质量样本")
+
     random.seed(42)
-    # 先按完整样本分组再切分：同一条（含模板重复）绝不能同时进入训练/验证，
-    # 否则 validation 会虚高。文档级 source_id 切分仍需数据源元数据完善后继续增强。
     grouped_samples = {}
     for sample in samples:
         key = json.dumps(sample, ensure_ascii=False, sort_keys=True)
@@ -525,18 +533,31 @@ def build_dataset_rfc003():
         else:
             val_samples.extend(group)
     
-    os.makedirs("data", exist_ok=True)
-    with open("data/train.jsonl", "w", encoding="utf-8") as f:
+    os.makedirs(os.path.dirname(train_out) or ".", exist_ok=True)
+    os.makedirs(os.path.dirname(val_out) or ".", exist_ok=True)
+    with open(train_out, "w", encoding="utf-8") as f:
         for s in train_samples:
             f.write(json.dumps(s, ensure_ascii=False) + "\n")
-    with open("data/val.jsonl", "w", encoding="utf-8") as f:
+    with open(val_out, "w", encoding="utf-8") as f:
         for s in val_samples:
             f.write(json.dumps(s, ensure_ascii=False) + "\n")
             
-    print(f"\n🎉 RFC-003 终极增强版数据集构建完成！总计: {len(samples)} 条")
-    print(f"├── 训练集 (data/train.jsonl): {len(train_samples)} 条")
-    print(f"└── 验证集 (data/val.jsonl):   {len(val_samples)} 条")
-    print("✅ 训练/验证已按完整样本分组切分；文档来源 source_id 级防泄漏仍需后续元数据完善。")
+    print(f"\n🎉 数据集构建完成！总计: {len(samples)} 条")
+    print(f"├── 训练集 ({train_out}): {len(train_samples)} 条")
+    print(f"└── 验证集 ({val_out}):   {len(val_samples)} 条")
+
+def main():
+    parser = argparse.ArgumentParser(description="Build RFC-003 dataset with optional tiny-format anti-overfitting mode")
+    parser.add_argument("--mode", type=str, default="standard", choices=["standard", "tiny-format"], help="Build mode")
+    parser.add_argument("--max_samples", type=int, default=None, help="Max samples limit (e.g. 500 for tiny-format)")
+    parser.add_argument("--train_out", type=str, default="data/train.jsonl", help="Train output jsonl path")
+    parser.add_argument("--val_out", type=str, default="data/val.jsonl", help="Val output jsonl path")
+    args = parser.parse_args()
+    
+    if args.mode == "tiny-format" and args.max_samples is None:
+        args.max_samples = 500
+        
+    build_dataset_rfc003(mode=args.mode, max_samples=args.max_samples, train_out=args.train_out, val_out=args.val_out)
 
 if __name__ == "__main__":
-    build_dataset_rfc003()
+    main()

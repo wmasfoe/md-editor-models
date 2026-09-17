@@ -81,10 +81,12 @@ fi
 MODEL_FAMILY="qwen3"
 if [[ "$BASE_MODEL" == *"Qwen2.5"* ]]; then
     MODEL_FAMILY="qwen2.5"
+elif [[ "$BASE_MODEL" == *"gemma-4"* ]] || [[ "$BASE_MODEL" == *"Gemma-4"* ]] || [[ "$BASE_MODEL" == *"gemma4"* ]]; then
+    MODEL_FAMILY="gemma4"
 fi
 
 if [ -z "$TIER" ]; then
-    if [[ "$BASE_MODEL" == *"1.5B"* ]] || [[ "$BASE_MODEL" == *"1.7B"* ]]; then
+    if [[ "$BASE_MODEL" == *"1.5B"* ]] || [[ "$BASE_MODEL" == *"1.7B"* ]] || [[ "$BASE_MODEL" == *"e2b"* ]] || [[ "$BASE_MODEL" == *"E2B"* ]] || [[ "$BASE_MODEL" == *"e4b"* ]] || [[ "$BASE_MODEL" == *"E4B"* ]]; then
         TIER="standard"
     else
         TIER="lite"
@@ -99,6 +101,10 @@ elif [[ "$BASE_MODEL" == *"3.8B"* ]]; then
     PARAM_TAG="3.8b"
 elif [[ "$BASE_MODEL" == *"3B"* ]]; then
     PARAM_TAG="3b"
+elif [[ "$BASE_MODEL" == *"e2b"* ]] || [[ "$BASE_MODEL" == *"E2B"* ]]; then
+    PARAM_TAG="e2b"
+elif [[ "$BASE_MODEL" == *"e4b"* ]] || [[ "$BASE_MODEL" == *"E4B"* ]]; then
+    PARAM_TAG="e4b"
 else
     PARAM_TAG="0.6b"
 fi

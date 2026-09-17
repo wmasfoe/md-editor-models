@@ -49,34 +49,36 @@ SPECIAL_TOKENS = [
 ]
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Fine-tune Qwen3 on Markdown SLM dataset with RFC-002 tokens and LoRA")
+    parser = argparse.ArgumentParser(description="Fine-tune Qwen/Gemma on Markdown SLM dataset with RFC-002 tokens and LoRA")
     
-    # 模型与数据路径 (支持 Qwen/Qwen3-0.6B 与 Qwen/Qwen3-1.7B)
+    # 模型与数据路径 (支持 Qwen/Qwen3-0.6B、Qwen/Qwen3-1.7B 与 google/gemma-4-e2b)
     parser.add_argument("--model_name_or_path", type=str, default="Qwen/Qwen3-0.6B", help="Base model identifier or local path")
     parser.add_argument("--train_file", type=str, default="data/train.jsonl", help="Path to training jsonl file")
     parser.add_argument("--task", type=str, default="multi", choices=["multi", "gec", "completion", "distill", "style-analysis"], help="Task profile for this adapter")
     parser.add_argument("--adapter_id", type=str, default="", help="Stable adapter identifier")
     parser.add_argument("--val_file", type=str, default="data/val.jsonl", help="Path to validation jsonl file")
-    parser.add_argument("--output_dir", type=str, default="output/qwen3-editor-lora", help="Directory to save LoRA checkpoints")
+    parser.add_argument("--output_dir", type=str, default="output/editor-lora", help="Directory to save LoRA checkpoints")
     
-    # 训练超参数 (针对 L4 / A100 现代 GPU 高吞吐优化)
-    parser.add_argument("--num_train_epochs", type=int, default=2, help="Total training epochs (2 for optimal LoRA convergence)")
-    parser.add_argument("--batch_size", type=int, default=64, help="Per-device batch size (64 for A100)")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
-    parser.add_argument("--learning_rate", type=float, default=2e-4, help="Initial learning rate")
-    parser.add_argument("--max_seq_length", type=int, default=1536, help="Maximum sequence length (1536 for full article context)")
+    # 训练超参数 (针对 L4 / A100 / T4 GPU 优化，防过拟合调优)
+    parser.add_argument("--num_train_epochs", type=int, default=2, help="Total training epochs (1-2 for optimal LoRA convergence)")
+    parser.add_argument("--batch_size", type=int, default=32, help="Per-device batch size")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=2, help="Gradient accumulation steps")
+    parser.add_argument("--learning_rate", type=float, default=1e-4, help="Initial learning rate (1e-4 for stable convergence)")
+    parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay for regularization")
+    parser.add_argument("--max_seq_length", type=int, default=1536, help="Maximum sequence length")
     parser.add_argument("--warmup_steps", type=int, default=30, help="Warmup steps")
-    parser.add_argument("--logging_steps", type=int, default=20, help="Log metrics every N steps")
+    parser.add_argument("--logging_steps", type=int, default=10, help="Log metrics every N steps")
     
-    # LoRA / QLoRA 配置 (针对 50,000+ 样本扩容)
-    parser.add_argument("--lora_r", type=int, default=32, help="LoRA rank")
-    parser.add_argument("--lora_alpha", type=int, default=64, help="LoRA scaling factor")
-    parser.add_argument("--lora_dropout", type=float, default=0.05, help="LoRA dropout rate")
+    # LoRA / QLoRA 配置 (轻量化防过拟合)
+    parser.add_argument("--lora_r", type=int, default=8, help="LoRA rank (8 is optimal for SLM format alignment)")
+    parser.add_argument("--lora_alpha", type=int, default=16, help="LoRA scaling factor")
+    parser.add_argument("--lora_dropout", type=float, default=0.1, help="LoRA dropout rate for regularization")
     parser.add_argument("--use_qlora", action="store_true", help="Enable 4-bit QLoRA to save VRAM")
+    parser.add_argument("--assistant_only_loss", action="store_true", default=True, help="Compute loss ONLY on assistant responses, preventing prompt memorization and overfitting")
     
     # 导出与合并
     parser.add_argument("--merge_and_save", action="store_true", help="Merge LoRA weights into base model after training")
-    parser.add_argument("--merged_output_dir", type=str, default="output/qwen-editor-merged", help="Directory to save the merged standalone model")
+    parser.add_argument("--merged_output_dir", type=str, default="output/editor-merged", help="Directory to save the merged standalone model")
 
     return parser.parse_args()
 
@@ -210,7 +212,7 @@ def main():
         bias="none"
     )
 
-    # 6. 配置 SFTTrainer 训练参数 (按 Epoch 评测与保存，消除空转开销)
+    # 6. 配置 SFTTrainer 训练参数 (按 Epoch 评测与保存，消除空转开销，启用助手回答专属 Loss 掩码)
     sft_config = SFTConfig(
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
@@ -218,6 +220,7 @@ def main():
         per_device_eval_batch_size=args.batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
         warmup_steps=args.warmup_steps,
         logging_steps=args.logging_steps,
         save_strategy="epoch",
@@ -227,6 +230,7 @@ def main():
         fp16=torch.cuda.is_available() and not torch.cuda.is_bf16_supported(),
         lr_scheduler_type="cosine",
         max_length=args.max_seq_length,
+        assistant_only_loss=args.assistant_only_loss,
         dataloader_num_workers=min(4, os.cpu_count()) if os.cpu_count() else 0,
         dataloader_pin_memory=True if torch.cuda.is_available() else False,
         report_to="none"

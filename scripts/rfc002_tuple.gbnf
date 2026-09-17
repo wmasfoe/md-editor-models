@@ -1,0 +1,17 @@
+# ==============================================================================
+# RFC-002 标准紧凑元组 JSON GBNF 语法约束文件 (用于 llama.cpp / llama-server)
+# 语法定义目标：强制模型仅以 [[start, end, "orig", "repl"], ...] 格式输出
+# 杜绝任何废话、Markdown 标记与非法 JSON，实现物理级结构保证
+# ==============================================================================
+
+root ::= ws "[" ws (tuple (ws "," ws tuple)*)? ws "]" ws
+
+tuple ::= "[" ws int ws "," ws int ws "," ws string ws "," ws string ws "]"
+
+int ::= [0-9]+
+
+string ::= "\"" char* "\""
+
+char ::= [^"\\\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
+
+ws ::= [ \t\n\r]*
