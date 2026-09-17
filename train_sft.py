@@ -29,6 +29,21 @@ def _patch_peft_torchao():
 
 _patch_peft_torchao()
 
+def _patch_peft_gemma4():
+    """兼容性修复：适配 Gemma 4 多模态模型中的 Gemma4ClippableLinear 封装层"""
+    try:
+        import peft.tuners.lora.model as lora_module
+        orig_create_new_module = lora_module.LoraModel._create_new_module
+        def _safe_create_new_module(self, lora_config, adapter_name, target, **kwargs):
+            if target.__class__.__name__ == "Gemma4ClippableLinear" and hasattr(target, "linear"):
+                return orig_create_new_module(self, lora_config, adapter_name, target.linear, **kwargs)
+            return orig_create_new_module(self, lora_config, adapter_name, target, **kwargs)
+        lora_module.LoraModel._create_new_module = _safe_create_new_module
+    except Exception:
+        pass
+
+_patch_peft_gemma4()
+
 def materialize_meta_tensors(model, device):
     """确保模型中所有遗留在 meta 上的非持久化缓冲区和参数（如 Gemma 4 架构特性）被物化到目标设备"""
     if device is None:
@@ -222,13 +237,21 @@ def main():
     # 5. 配置 LoRA
     # 单任务 Adapter 必须保持纯 delta（仅 lora_A/lora_B），不包含 modules_to_save：
     # llama.cpp LoRA GGUF 无法表达完整权重副本，任何 modules_to_save 都会导致转换失败。
-    adapter_modules_to_save = ["embed_tokens", "lm_head"] if args.task == "multi" else None
+    # Gemma 4 等多模态模型在视觉与音频塔使用了 Gemma4ClippableLinear (非标准 nn.Linear)，
+    # 若全局匹配 ["q_proj", ...] 会匹配到视觉/音频编码器。
+    # 因此在存在 language_model 时，精准限定仅对 language_model 的文本解码层注入 LoRA。
+    if hasattr(model, "language_model") or "gemma-4" in args.model_name_or_path.lower() or "gemma4" in args.model_name_or_path.lower():
+        target_modules = r".*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)$"
+        print("🎯 检测到 Gemma 4 多模态架构，自动精准锁定 language_model 文本解码层注入 LoRA。")
+    else:
+        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
     peft_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        target_modules=target_modules,
         modules_to_save=adapter_modules_to_save,
         bias="none"
     )
