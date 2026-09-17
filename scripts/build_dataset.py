@@ -180,12 +180,18 @@ def build_dataset_rfc003(mode="standard", max_samples=None, train_out="data/trai
     # --------------------------------------------------------------------------
     print("📦 [1/5] 流式拉取 100% 真实人类开源长文与精校摘要语料...")
     real_articles = []
+    csl_limit = 50 if mode == "tiny-format" else 4000
+    book_limit = 50 if mode == "tiny-format" else 4000
+    wiki_limit = 50 if mode == "tiny-format" else 8000
+    smol_limit = 50 if mode == "tiny-format" else 6000
 
     # 1.1 中文学术文献库 (wyp/clue-csl): 论文全篇 + 学者作者编写的真实学术摘要 + 专有关键词列表
     print("  📚 [1/4] 加载中文学术文献 (wyp/clue-csl: 真实长摘要 + 专有关键词)...")
     try:
         ds_csl = load_dataset('wyp/clue-csl', split='validation')
-        for row in ds_csl:
+        for idx, row in enumerate(ds_csl):
+            if idx >= csl_limit:
+                break
             abst = row.get('abst', '').strip()
             keywords = row.get('keyword', [])
             if len(abst) > 80:
@@ -208,7 +214,9 @@ def build_dataset_rfc003(mode="standard", max_samples=None, train_out="data/trai
     print("  📖 [2/4] 加载图书全章与真实人类撰写章节摘要 (Book_Summary_Chinese)...")
     try:
         ds_book = load_dataset('yuyijiong/Book_Summary_Chinese', split='train')
-        for row in ds_book:
+        for idx, row in enumerate(ds_book):
+            if idx >= book_limit:
+                break
             chapter = row.get('chapter', '').strip()
             summary = row.get('summary', '').strip()
             book_name = row.get('file_name', '').replace('.csv', '')
@@ -233,7 +241,7 @@ def build_dataset_rfc003(mode="standard", max_samples=None, train_out="data/trai
     print("  🌐 [3/4] 流式拉取维基百科全篇正文与人类编辑精审导言...")
     try:
         ds_wiki_zh = load_dataset('wikimedia/wikipedia', '20231101.zh', split='train', streaming=True)
-        for row in ds_wiki_zh.take(8000):
+        for row in ds_wiki_zh.take(wiki_limit):
             title = row.get('title', '').strip()
             raw_text = row.get('text', '').strip()
             if len(raw_text) > 250 and not raw_text.startswith("#REDIRECT"):
@@ -272,7 +280,7 @@ def build_dataset_rfc003(mode="standard", max_samples=None, train_out="data/trai
     print("  📘 [4/4] 流式拉取技术教程与英文教科书 (SmolLM Cosmopedia)...")
     try:
         ds_smol = load_dataset('HuggingFaceTB/smollm-corpus', 'cosmopedia-v2', split='train', streaming=True)
-        for row in ds_smol.take(6000):
+        for row in ds_smol.take(smol_limit):
             text = row.get('text', '').strip()
             prompt = row.get('prompt', '').strip()
             if len(text) > 250:
