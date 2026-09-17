@@ -237,6 +237,8 @@ def main():
     # 5. 配置 LoRA
     # 单任务 Adapter 必须保持纯 delta（仅 lora_A/lora_B），不包含 modules_to_save：
     # llama.cpp LoRA GGUF 无法表达完整权重副本，任何 modules_to_save 都会导致转换失败。
+    adapter_modules_to_save = ["embed_tokens", "lm_head"] if args.task == "multi" else None
+
     # Gemma 4 等多模态模型在视觉与音频塔使用了 Gemma4ClippableLinear (非标准 nn.Linear)，
     # 若全局匹配 ["q_proj", ...] 会匹配到视觉/音频编码器。
     # 因此在存在 language_model 时，精准限定仅对 language_model 的文本解码层注入 LoRA。
