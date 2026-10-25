@@ -126,6 +126,17 @@ def upsert(args, manifest: dict) -> None:
         return
     if args.asset_kind == "base":
         model["base"] = asset(args)
+        if args.tier == "standard":
+            # RFC-004: Standard 档（Gemma 4 E2B）免微调原生具备 GEC 能力，标注 adapterId=None
+            model.setdefault("capabilities", {})["gec"] = {
+                "adapterId": None,
+                "filename": None,
+                "sizeBytes": 0,
+                "sha256": "",
+                "downloadUrl": "",
+                "promptProtocol": "harness-chatml-v1",
+                "grammar": "rfc002_tuple",
+            }
         return
     if not args.task:
         raise ValueError("--asset_kind adapter requires --task")

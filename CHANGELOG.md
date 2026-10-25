@@ -4,6 +4,18 @@
 
 ---
 
+## 1.4.0 - 2026-10-25 ([#3](https://github.com/wmasfoe/md-editor-models/pull/3))
+
+全面落地 RFC-004 App Harness 架构与双档位解耦：Standard 档引入 Google Gemma 4 E2B 免微调高精度基座，Lite 档采用超轻量防过拟合微调。
+
+### 💻 架构与双档位升级 (RFC-004)
+- **Standard 档升级 Google Gemma 4 E2B**：Standard 档位采用原生 google/gemma-4-E2B-it 基座，具备极高中文理解力与长句逻辑，配合 App Harness 和 GBNF 实现零微调原生上线，彻底根治过拟合与虚假纠错。
+- **App Harness + GBNF 物理级输出约束**：客户端通过 App Harness 提供清晰 System Prompt 并挂载 rfc002_tuple.gbnf 语法规则，在采样层保证 100% 紧凑元组 JSON 或空列表输出。
+- **Lite 档超轻量防过拟合微调**：Qwen 3 0.6B Lite 档位训练参数收敛至 1 Epoch、3e-5 极低学习率与 LoRA r=4，彻底移除机械模板重复，保持首字 <30ms 与 <300MB 极轻占用。
+- **思维链（Thinking Mode）硬关闭**：在启动参数与请求体中显式关闭 reasoning budget 与 thinking 模式，杜绝思维链耗尽 max_tokens 与先验分布冲突。
+
+---
+
 ## 1.3.1 - 2026-09-08 ([#2](https://github.com/wmasfoe/md-editor-models/pull/2))
 
 全面重构长文档语义提炼与上下文理解能力，接入 100% 真实学术与百科长文语料，为行内续写提供高密度专有名词与主旨提示。
