@@ -420,7 +420,16 @@ echo -e "\n🚀 [5/5] 发布与资产同步检查..."
 
 HAS_GH_AUTH=false
 if command -v gh &> /dev/null; then
-    if [ -n "$GH_TOKEN" ] || [ -n "$GITHUB_TOKEN" ] || gh auth status &> /dev/null; then
+    if [ -n "$GH_TOKEN" ] || [ -n "$GITHUB_TOKEN" ]; then
+        if gh api user &> /dev/null; then
+            HAS_GH_AUTH=true
+        else
+            echo "❌ 检测到 GH_TOKEN 环境变量，但 GitHub API 校验返回 HTTP 401 Unauthorized！"
+            echo "👉 原因：当前 Token 已过期、失效，或缺少 'repo' (Full control) 读写权限。"
+            echo "👉 解决：请前往 https://github.com/settings/tokens 生成带 'repo' 权限的 Personal Access Token。"
+            exit 1
+        fi
+    elif gh auth status &> /dev/null; then
         HAS_GH_AUTH=true
     fi
 fi
