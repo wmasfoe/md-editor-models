@@ -78,10 +78,14 @@ fi
 # ------------------------------------------------------------------------------
 # 模型档位与元数据推断
 # ------------------------------------------------------------------------------
+if [ "$TIER" = "standard" ] && [ "$BASE_MODEL" = "Qwen/Qwen3-0.6B" ]; then
+    BASE_MODEL="google/gemma-4-E2B-it"
+fi
+
 MODEL_FAMILY="qwen3"
 if [[ "$BASE_MODEL" == *"Qwen2.5"* ]]; then
     MODEL_FAMILY="qwen2.5"
-elif [[ "$BASE_MODEL" == *"gemma-4"* ]] || [[ "$BASE_MODEL" == *"Gemma-4"* ]] || [[ "$BASE_MODEL" == *"gemma4"* ]]; then
+elif [[ "$BASE_MODEL" == *"gemma-4"* ]] || [[ "$BASE_MODEL" == *"Gemma-4"* ]] || [[ "$BASE_MODEL" == *"gemma4"* ]] || [[ "$BASE_MODEL" == *"Gemma4"* ]]; then
     MODEL_FAMILY="gemma4"
 fi
 
@@ -204,10 +208,14 @@ else
         HF_NAMESPACE=$(dirname "$BASE_MODEL")
         HF_BASENAME=$(basename "$BASE_MODEL")
         if [ "$HF_NAMESPACE" = "." ]; then
-            echo "❌ --asset base 需要 Hugging Face 格式的基座 ID（例如 Qwen/Qwen3-0.6B）。"
+            echo "❌ --asset base 需要 Hugging Face 格式的基座 ID（例如 Qwen/Qwen3-0.6B 或 google/gemma-4-E2B-it）。"
             exit 1
         fi
-        OFFICIAL_GGUF_URL="https://huggingface.co/${HF_NAMESPACE}/${HF_BASENAME}-GGUF/resolve/main/${HF_BASENAME}-Q8_0.gguf"
+        if [[ "$BASE_MODEL" == *"gemma"* ]] || [[ "$BASE_MODEL" == *"Gemma"* ]]; then
+            OFFICIAL_GGUF_URL="https://huggingface.co/unsloth/${HF_BASENAME}-GGUF/resolve/main/${HF_BASENAME}-Q8_0.gguf"
+        else
+            OFFICIAL_GGUF_URL="https://huggingface.co/${HF_NAMESPACE}/${HF_BASENAME}-GGUF/resolve/main/${HF_BASENAME}-Q8_0.gguf"
+        fi
         FINAL_GGUF="${OUTPUT_DIR}/${TIER}-base-${MODEL_FAMILY}-${PARAM_TAG}-${VERSION}-Q8_0.gguf"
     else
         # adapter：纯 LoRA delta（f16，几十 MB 级）。词表不扩展，llama.cpp 可直接 --lora 加载。
@@ -283,12 +291,12 @@ elif [ "$ASSET_KIND" = "adapter" ]; then
               --output_dir "$LORA_DIR" \
               --task "$TASK" \
               --adapter_id "${MODEL_ID}-${TASK}" \
-              --num_train_epochs 2 \
+              --num_train_epochs 1 \
               --batch_size $BATCH_SIZE \
               --gradient_accumulation_steps $GRAD_ACCUM \
-              --learning_rate 1e-4 \
-              --lora_r 8 \
-              --lora_alpha 16 \
+              --learning_rate 3e-5 \
+              --lora_r 4 \
+              --lora_alpha 8 \
               --weight_decay 0.01 \
               --lora_dropout 0.1 \
               --assistant_only_loss

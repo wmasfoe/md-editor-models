@@ -346,8 +346,8 @@ def build_dataset_rfc003(mode="standard", max_samples=None, train_out="data/trai
         ("微服务 archetecture 演进：", "微服务 architecture 演进："),
         ("数据库 configration 如下：", "数据库 configuration 如下：")
     ]
-    draft_multiplier = 4 if mode == "tiny-format" else 20
-    draft_templates = raw_draft_templates * draft_multiplier
+    # 彻底杜绝机械倍增与死记硬背：每条模板保持独立唯一样本
+    draft_templates = raw_draft_templates
 
     for orig, corr in draft_templates:
         if orig == corr:
@@ -381,7 +381,7 @@ def build_dataset_rfc003(mode="standard", max_samples=None, train_out="data/trai
                 ]
             })
 
-    # 2.4 🛡️ 专业技术术语假阳性压制负样本 (Hard Negatives)
+    # 2.4 🛡️ 专业技术术语假阳性压制负样本 (Hard Negatives - 保持无重复自然分布)
     raw_tech_terms = [
         "我们在项目中使用了 LoRA 微调和 Q4_K_M 量化的 GGUF 模型。",
         "Tauri 2.0 结合 React 18 带来了极致的端侧启动体验。",
@@ -390,8 +390,7 @@ def build_dataset_rfc003(mode="standard", max_samples=None, train_out="data/trai
         "该系统基于 Spring Boot 3 和 Next.js 构建前后端分离架构。",
         "推荐在 CI/CD 流水线中集成 Code Review 与单元测试。"
     ]
-    tech_multiplier = 1 if mode == "tiny-format" else 25
-    tech_terms_clean = raw_tech_terms * tech_multiplier
+    tech_terms_clean = raw_tech_terms
     for term_sentence in tech_terms_clean:
         samples.append({
             "messages": [
@@ -497,14 +496,13 @@ def build_dataset_rfc003(mode="standard", max_samples=None, train_out="data/trai
         "| 参数 | 类型 | 说明 |\n|---|---|---|\n| id | string | 唯一标识 |",
         "```rust\nfn main() {\n    println!(\"Hello, world!\");\n}\n```"
     ]
-    preserve_multiplier = 2 if mode == "tiny-format" else 20
-    preserves = raw_preserves * preserve_multiplier
+    preserves = raw_preserves
     for p in preserves:
         samples.append({"messages": [{"role": "user", "content": f"<|task_preserve|>{p}"}, {"role": "assistant", "content": "[]"}]})
 
-    # 打乱并切分数据集 (90% 训练集, 10% 验证集)
-    MAX_DUP = 2 if mode == "tiny-format" else 10
-    print(f"\n🧹 去重前样本数: {len(samples)}（重复上限每文本 {MAX_DUP} 条）")
+    # 打乱并严格单条去重，确保 0 重复 (90% 训练集, 10% 验证集)
+    MAX_DUP = 1
+    print(f"\n🧹 严格去重前样本数: {len(samples)}（去重策略: 完全消除重复条目）")
     seen_counts = {}
     deduped = []
     for s in samples:

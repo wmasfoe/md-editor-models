@@ -18,6 +18,9 @@
 - [**gec_enhancement_and_handover_rfc003.md**](./architecture/gec_enhancement_and_handover_rfc003.md)  
   **用途 (RFC-003)**：v1.2.0 GEC 语法纠错端侧强化方案与下一任 Agent 极简交接指南。包含 25,000 条 GEC 扩容、草稿短句切片（冒号纠错）、拼音输入法候选词扰动及 Hard Negative 假阳性压制。
 
+- [**app_harness_integration_spec_rfc004.md**](./architecture/app_harness_integration_spec_rfc004.md)  
+  **用途 (RFC-004)**：客户端 App Harness 编排与双档位 (Gemma 4 Standard + Qwen 3 Lite) 协同落地规范。彻底解决过拟合：客户端 App Harness 负责意图引导与 GBNF 物理约束，Standard 免微调接入 Gemma 4 E2B，Lite 轻量对齐。
+
 ---
 
 ## 2. 训练与部署操作指南 (`guides/`)
