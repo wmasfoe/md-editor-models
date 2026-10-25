@@ -7,6 +7,14 @@ import argparse
 from datasets import load_dataset
 import pangu
 
+def safe_pangu_space(text: str) -> str:
+    """兼容不同版本 pangu 的中英文空格规范化函数 (space_text / spacing)"""
+    if hasattr(pangu, "spacing"):
+        return pangu.spacing(text)
+    if hasattr(pangu, "space_text"):
+        return pangu.space_text(text)
+    return text
+
 # ==============================================================================
 # RFC-003 终极增强版 (100% 真实长文语义提炼、专有实体注入与 Qwen3 多尺度续写)
 # 核心升级:
@@ -362,7 +370,7 @@ def build_dataset_rfc003(mode="standard", max_samples=None, train_out="data/trai
         text_chunk = article['text'][:180].strip()
         if len(text_chunk) < 20:
             continue
-        pangu_clean = pangu.spacing_text(text_chunk)
+        pangu_clean = safe_pangu_space(text_chunk)
         corrupted = corrupt_mixed_text(pangu_clean)
         if corrupted and corrupted != pangu_clean:
             diff = extract_compact_tuple_json(corrupted, pangu_clean)
