@@ -374,7 +374,24 @@ else
     rm -f "$MANIFEST_FILE"
 fi
 
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/$(basename "$FINAL_GGUF")"
+# GitHub Releases 单文件硬限制为 2 GiB (2,147,483,648 字节)
+# 超过此限制时，GitHub API 会抛出 HTTP 422: size must be less than 2147483648
+MAX_GH_ASSET_SIZE=2147483648
+SKIP_GH_ASSET_UPLOAD=false
+
+if [ "$GGUF_SIZE" -ge "$MAX_GH_ASSET_SIZE" ]; then
+    if [ -n "$OFFICIAL_GGUF_URL" ]; then
+        echo "⚠️ 产物大小 (${GGUF_SIZE} 字节) 超过 GitHub Releases 单文件 2 GiB 上限 ($MAX_GH_ASSET_SIZE 字节)"
+        echo "🌐 客户端下载链接将直接采用官方 Hugging Face 高速 CDN: $OFFICIAL_GGUF_URL"
+        DOWNLOAD_URL="$OFFICIAL_GGUF_URL"
+        SKIP_GH_ASSET_UPLOAD=true
+    else
+        echo "❌ 产物大小 (${GGUF_SIZE} 字节) 超过 GitHub Releases 单文件 2 GiB 上限，且无可用直连 CDN URL。"
+        exit 1
+    fi
+else
+    DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/$(basename "$FINAL_GGUF")"
+fi
 
 MANIFEST_ARGS=(
   --manifest_path "$MANIFEST_FILE"
@@ -453,7 +470,11 @@ $(cat "$MANIFEST_FILE")
 "
     if gh release view "$VERSION" --repo "$REPO" &> /dev/null; then
         echo "🔄 增量追加资产到已有 Release $VERSION..."
-        gh release upload "$VERSION" "$FINAL_GGUF" --repo "$REPO" --clobber
+        if [ "$SKIP_GH_ASSET_UPLOAD" = true ]; then
+            echo "ℹ️ 产物大小超过 2GB (${GGUF_SIZE} 字节)，跳过 GitHub Releases 二进制附件上传；客户端将直接从 Hugging Face CDN 下载: $DOWNLOAD_URL"
+        else
+            gh release upload "$VERSION" "$FINAL_GGUF" --repo "$REPO" --clobber
+        fi
         [ -f "changelog.json" ] && gh release upload "$VERSION" "changelog.json" --repo "$REPO" --clobber
         # 以远端最新 manifest 为基线重新合并（当前本地只含本次资产，直接覆盖会丢 capabilities）
         gh release download "$VERSION" -p "manifest.json" -O "$MANIFEST_FILE" --repo "$REPO" --clobber || true
@@ -472,6 +493,16 @@ $(cat "$MANIFEST_FILE")
           --download_url "" \
           --no-available
         gh release upload "$VERSION" "$MANIFEST_FILE" --repo "$REPO" --clobber
+
+        RELEASE_NOTES="### md-editor 专属端侧小模型矩阵 (${VERSION})
+
+${CHANGELOG_NOTES}
+
+#### 📋 客户端多模型 Manifest
+\`\`\`json
+$(cat "$MANIFEST_FILE")
+\`\`\`
+"
         gh release edit "$VERSION" --repo "$REPO" --notes "$RELEASE_NOTES"
         # 中断残留的 draft Release 在此补发布，避免资产上传后仍是草稿
         gh release edit "$VERSION" --repo "$REPO" --draft=false 2>/dev/null || true
@@ -479,7 +510,23 @@ $(cat "$MANIFEST_FILE")
         echo "✨ 创建全新 Release $VERSION..."
         EXTRA_FILES=()
         [ -f "changelog.json" ] && EXTRA_FILES+=("changelog.json")
-        gh release create "$VERSION" "$FINAL_GGUF" "$MANIFEST_FILE" "${EXTRA_FILES[@]}" \
+        RELEASE_FILES=("$MANIFEST_FILE" "${EXTRA_FILES[@]}")
+        if [ "$SKIP_GH_ASSET_UPLOAD" != true ]; then
+            RELEASE_FILES=("$FINAL_GGUF" "${RELEASE_FILES[@]}")
+        else
+            echo "ℹ️ 产物大小超过 2GB (${GGUF_SIZE} 字节)，全新 Release 仅发布 Manifest 与元数据，二进制直连 Hugging Face CDN: $DOWNLOAD_URL"
+        fi
+
+        RELEASE_NOTES="### md-editor 专属端侧小模型矩阵 (${VERSION})
+
+${CHANGELOG_NOTES}
+
+#### 📋 客户端多模型 Manifest
+\`\`\`json
+$(cat "$MANIFEST_FILE")
+\`\`\`
+"
+        gh release create "$VERSION" "${RELEASE_FILES[@]}" \
           --repo "$REPO" \
           --title "$RELEASE_TITLE" \
           --notes "$RELEASE_NOTES"
