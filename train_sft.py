@@ -233,12 +233,15 @@ def main():
 
     model_dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else (torch.float16 if torch.cuda.is_available() else torch.float32)
 
+    # Gemma 4 架构包含非文本模态塔（如 AudioTower），当前 transformers 仅支持 eager 注意力
+    attn_impl = "eager" if "gemma" in args.model_name_or_path.lower() else ("sdpa" if torch.cuda.is_available() else None)
+
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name_or_path,
         quantization_config=bnb_config,
         device_map="auto" if torch.cuda.is_available() else None,
         torch_dtype=model_dtype,
-        attn_implementation="sdpa" if torch.cuda.is_available() else None,
+        attn_implementation=attn_impl,
         trust_remote_code=True
     )
 
